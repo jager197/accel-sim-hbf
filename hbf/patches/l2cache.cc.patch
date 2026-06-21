@@ -1,5 +1,5 @@
 diff --git a/src/gpgpu-sim/l2cache.cc b/src/gpgpu-sim/l2cache.cc
-index 52eed0ef..638b55eb 100644
+index 52eed0ef..5586fff3 100644
 --- a/src/gpgpu-sim/l2cache.cc
 +++ b/src/gpgpu-sim/l2cache.cc
 @@ -84,6 +84,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
@@ -24,14 +24,36 @@ index 52eed0ef..638b55eb 100644
    for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
         p++) {
      delete m_sub_partition[p];
-@@ -233,6 +241,63 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
+@@ -233,6 +241,104 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
            m_id * m_config->m_n_sub_partition_per_memory_channel);
  }
  
++// =============================================================================
++// hbf_cycle() — 每周期 HBF 控制器调度入口
++//
++// 由 gpgpu_sim::cycle() (gpu-sim.cc:2013) 在每个 DRAM clock 周期调用。
++// 跟 dram_cycle() / simple_dram_model_cycle() 并列执行，共享同一套
++// L2 cache 和 sub_partition 仲裁机制。
++//
++// 分两步：收（HBF 返回 → L2）和 发（L2 miss → HBF）。
++//
++// 地址路由机制：
++//   本函数只处理 is_hbf_addr() 为 true 的请求（默认 256GB-768GB）。
++//   DRAM 路径（dram_cycle / simple_dram_model_cycle）里加了反向过滤
++//   —— is_hbf_addr() 为 true 的请求被 continue 跳过。
++//   这样 HBF 和 DRAM 各看各的地址段，互不干扰。
++// =============================================================================
 +void memory_partition_unit::hbf_cycle() {
 +  if (!m_hbf) return;
 +
-+  // Pop completed requests from HBF return queue and push to dram_L2_queue
++// 从 HBF 返回队列取完成的请求，推回 L2 cache
++  //   hbf_ctrl_t::cycle() 已经把到期的请求搬到 m_returnq
++  //   → 这里 top() 看一眼队头
++  //   → 找到请求来源的 sub_partition
++  //   → 推进 sub_partition 的 dram_L2_queue（注意名字带 dram 是历史遗留，
++  //      实际上 HBF 返回也走同一个队列）
++  //   → 后续 L2 cache 会处理 fill，然后通过 interconnect 返回 SM core
++
 +  mem_fetch *mf_return = m_hbf->return_queue_top();
 +  if (mf_return) {
 +    unsigned dest_global_spid = mf_return->get_sub_partition_id();
@@ -39,9 +61,11 @@ index 52eed0ef..638b55eb 100644
 +    assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
 +    if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
 +      if (mf_return->get_access_type() == L1_WRBK_ACC) {
++        // 写回请求：不需要返回数据，标记完成即可
 +        m_sub_partition[dest_spid]->set_done(mf_return);
 +        delete mf_return;
 +      } else {
++        // 读请求 / 普通写请求：推进 L2 的返回队列，等待 L2 cache fill
 +        m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
 +        mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
 +                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -53,11 +77,24 @@ index 52eed0ef..638b55eb 100644
 +    }
 +  }
 +
-+  // Cycle the HBF controller (process latency queue)
++  // 驱动 HBF 控制器内部走一拍：把到期的请求从延迟 FIFO 搬到返回队列。
++  // 这些请求会在下一拍的"第一步"被取走。
 +  m_hbf->cycle();
 +
-+  // Pull new requests from L2 sub-partitions and push to HBF
-+  // Only route requests whose address falls in the HBF range
++  // ═══════════════════════════════════════════════════════════════════════
++  // 第二步：发 —— 从 sub_partition 的 L2_dram_queue 取 L2 miss 请求，
++  //         如果地址在 HBF 区间，推给 HBF 控制器。
++  //
++  // 仲裁机制（与 DRAM 路径共享）：
++  //   用 m_arbitration_metadata 管理信用额度，防止某个 sub_partition 独占。
++  //   last_borrower 记录上次发请求的 sub_partition，实现 round-robin。
++  //
++  // 关键分支：
++  //   is_hbf_addr(mf->get_addr()) → false: continue 跳过，留给 DRAM 路径
++  //                              → true:  推进 HBF 的延迟 FIFO
++  //
++  // 每周期最多发一个请求（break），与 DRAM 路径一致。
++  // ═══════════════════════════════════════════════════════════════════════
 +  int last_issued_partition = m_arbitration_metadata.last_borrower();
 +  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
 +       p++) {
@@ -67,11 +104,15 @@ index 52eed0ef..638b55eb 100644
 +        can_issue_to_dram(spid)) {
 +      mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
 +
-+      // Only route HBF-addressed requests to HBF controller
++      // ═══ HBF vs DRAM 路由的关键判断 ═══
++      // 地址在 HBF 区间（默认 256GB-768GB）→ 走 HBF
++      // 地址在 DRAM 区间（默认 0-256GB）  → continue，留给 dram_cycle()
 +      if (!m_config->is_hbf_addr(mf->get_addr())) continue;
 +
++      // HBF 队列满了就不再发了（避免无限排队）
 +      if (m_hbf->full(mf->is_write())) break;
 +
++      // 从 L2 请求队列弹出，推进 HBF 延迟 FIFO
 +      m_sub_partition[spid]->L2_dram_queue_pop();
 +      MEMPART_DPRINTF(
 +          "Issue mem_fetch request %p from sub partition %d to HBF\n", mf,
@@ -80,7 +121,7 @@ index 52eed0ef..638b55eb 100644
 +      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
 +                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
 +      m_arbitration_metadata.borrow_credit(spid);
-+      break;  // HBF controller accepts one request per cycle
++      break;  // 每周期只发一个请求到 HBF
 +    }
 +  }
 +}
@@ -88,7 +129,7 @@ index 52eed0ef..638b55eb 100644
  void memory_partition_unit::simple_dram_model_cycle() {
    // pop completed memory request from dram and push it to dram-to-L2 queue
    // of the original sub partition
-@@ -289,6 +354,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
+@@ -289,6 +395,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
        MEMPART_DPRINTF(
            "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
            spid);
@@ -98,7 +139,7 @@ index 52eed0ef..638b55eb 100644
        dram_delay_t d;
        d.req = mf;
        d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
-@@ -347,6 +415,9 @@ void memory_partition_unit::dram_cycle() {
+@@ -347,6 +456,9 @@ void memory_partition_unit::dram_cycle() {
        mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
        if (m_dram->full(mf->is_write())) break;
  
@@ -108,7 +149,7 @@ index 52eed0ef..638b55eb 100644
        m_sub_partition[spid]->L2_dram_queue_pop();
        MEMPART_DPRINTF(
            "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
-@@ -416,6 +487,7 @@ void memory_partition_unit::print(FILE *fp) const {
+@@ -416,6 +528,7 @@ void memory_partition_unit::print(FILE *fp) const {
        fprintf(fp, " <NULL mem_fetch?>\n");
    }
    m_dram->print(fp);
