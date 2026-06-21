@@ -1,0 +1,41 @@
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index 9055502c..ffa4e4b7 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -322,6 +322,24 @@ void memory_config::reg_options(class OptionParser *opp) {
+   // SST mode activate
+   option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
+                          "0");
++
++  // HBF (High Bandwidth Flash) configuration - Phase 1
++  option_parser_register(opp, "-gpgpu_hbf_enabled", OPT_BOOL, &hbf_enabled,
++                         "Enable HBF memory tier (default=0)", "0");
++  option_parser_register(opp, "-gpgpu_hbf_base_addr", OPT_UINT64, &hbf_base_addr,
++                         "HBF base address in GPU memory space (default 256GB)",
++                         "274877906944");
++  option_parser_register(opp, "-gpgpu_hbf_size", OPT_UINT64, &hbf_size,
++                         "HBF capacity in bytes (default 512GB)",
++                         "549755813888");
++  option_parser_register(opp, "-gpgpu_hbf_latency", OPT_UINT32, &hbf_latency,
++                         "HBF fixed latency in GPU core cycles (default 10000)",
++                         "10000");
++  option_parser_register(opp, "-gpgpu_hbf_max_outstanding", OPT_UINT32,
++                         &hbf_max_outstanding,
++                         "Max outstanding HBF requests (default 256, 0=unlimited)",
++                         "256");
++
+   m_address_mapping.addrdec_setoption(opp);
+ }
+ 
+@@ -2011,6 +2029,11 @@ void gpgpu_sim::cycle() {
+       else
+         m_memory_partition_unit[i]
+             ->dram_cycle();  // Issue the dram command (scheduler + delay model)
++      // HBF cycle — process HBF controller if enabled
++      if (m_memory_config->hbf_enabled) {
++        m_memory_partition_unit[i]->hbf_cycle();
++      }
++
+       // Update performance counters for DRAM
+       if (m_config.g_power_simulation_enabled) {
+         m_memory_partition_unit[i]->set_dram_power_stats(

@@ -1,0 +1,118 @@
+diff --git a/src/gpgpu-sim/l2cache.cc b/src/gpgpu-sim/l2cache.cc
+index 52eed0ef..638b55eb 100644
+--- a/src/gpgpu-sim/l2cache.cc
++++ b/src/gpgpu-sim/l2cache.cc
+@@ -84,6 +84,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
+       m_gpu(gpu) {
+   m_dram = new dram_t(m_id, m_config, m_stats, this, gpu);
+ 
++  // Create HBF controller if HBF is enabled
++  if (m_config->hbf_enabled) {
++    m_hbf = new hbf_ctrl_t(m_id, m_config, m_stats, this, gpu);
++  } else {
++    m_hbf = NULL;
++  }
++
+   m_sub_partition = new memory_sub_partition
+       *[m_config->m_n_sub_partition_per_memory_channel];
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+@@ -110,6 +117,7 @@ void memory_partition_unit::handle_memcpy_to_gpu(
+ 
+ memory_partition_unit::~memory_partition_unit() {
+   delete m_dram;
++  if (m_hbf) delete m_hbf;
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+        p++) {
+     delete m_sub_partition[p];
+@@ -233,6 +241,63 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
+           m_id * m_config->m_n_sub_partition_per_memory_channel);
+ }
+ 
++void memory_partition_unit::hbf_cycle() {
++  if (!m_hbf) return;
++
++  // Pop completed requests from HBF return queue and push to dram_L2_queue
++  mem_fetch *mf_return = m_hbf->return_queue_top();
++  if (mf_return) {
++    unsigned dest_global_spid = mf_return->get_sub_partition_id();
++    int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
++    assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
++    if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
++      if (mf_return->get_access_type() == L1_WRBK_ACC) {
++        m_sub_partition[dest_spid]->set_done(mf_return);
++        delete mf_return;
++      } else {
++        m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
++        mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
++                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        MEMPART_DPRINTF(
++            "mem_fetch request %p return from HBF to sub partition %d\n",
++            mf_return, dest_spid);
++      }
++      m_hbf->return_queue_pop();
++    }
++  }
++
++  // Cycle the HBF controller (process latency queue)
++  m_hbf->cycle();
++
++  // Pull new requests from L2 sub-partitions and push to HBF
++  // Only route requests whose address falls in the HBF range
++  int last_issued_partition = m_arbitration_metadata.last_borrower();
++  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
++       p++) {
++    int spid = (p + last_issued_partition + 1) %
++               m_config->m_n_sub_partition_per_memory_channel;
++    if (!m_sub_partition[spid]->L2_dram_queue_empty() &&
++        can_issue_to_dram(spid)) {
++      mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
++
++      // Only route HBF-addressed requests to HBF controller
++      if (!m_config->is_hbf_addr(mf->get_addr())) continue;
++
++      if (m_hbf->full(mf->is_write())) break;
++
++      m_sub_partition[spid]->L2_dram_queue_pop();
++      MEMPART_DPRINTF(
++          "Issue mem_fetch request %p from sub partition %d to HBF\n", mf,
++          spid);
++      m_hbf->push(mf);
++      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
++                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++      m_arbitration_metadata.borrow_credit(spid);
++      break;  // HBF controller accepts one request per cycle
++    }
++  }
++}
++
+ void memory_partition_unit::simple_dram_model_cycle() {
+   // pop completed memory request from dram and push it to dram-to-L2 queue
+   // of the original sub partition
+@@ -289,6 +354,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
+       MEMPART_DPRINTF(
+           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+           spid);
++      // Skip HBF-addressed requests in simple_dram_model path
++      if (m_config->is_hbf_addr(mf->get_addr())) continue;
++
+       dram_delay_t d;
+       d.req = mf;
+       d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+@@ -347,6 +415,9 @@ void memory_partition_unit::dram_cycle() {
+       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+       if (m_dram->full(mf->is_write())) break;
+ 
++      // Skip HBF-addressed requests — handled by hbf_cycle()
++      if (m_config->is_hbf_addr(mf->get_addr())) continue;
++
+       m_sub_partition[spid]->L2_dram_queue_pop();
+       MEMPART_DPRINTF(
+           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+@@ -416,6 +487,7 @@ void memory_partition_unit::print(FILE *fp) const {
+       fprintf(fp, " <NULL mem_fetch?>\n");
+   }
+   m_dram->print(fp);
++  if (m_hbf) m_hbf->print_stat(fp);
+ }
+ 
+ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,

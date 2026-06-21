@@ -16,3 +16,13 @@ compile_commands.json
 .cache
 .cursorrules
 CLAUDE.md
+.venv/
+_app_cuda_version_*
+_cuobjdump_*
+config_volta_islip.icnt
+gpgpusim.config
+gpgpu_inst_stats.txt
+*.ptx
+*.ptxas
+hbf_test
+vectorAdd
