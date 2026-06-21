@@ -8,7 +8,7 @@ HBF is a new flash memory technology being developed by SanDisk and SK hynix. Th
 
 HBF is still in early stages — first chip samples are expected in 2H 2026, with commercial products in 2027. A few academic groups are working on related research (e.g., HAVEN), but they all use internal simulators. Nothing is open-source.
 
-I'm a first-year PhD student and my research involves HBF-integrated GPU architectures. Since there's no publicly available simulation platform, I decided to build one myself.
+My research involves HBF-integrated GPU architectures. Since there's no publicly available simulation platform, I decided to build one myself.
 
 ## What's Done
 
