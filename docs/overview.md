@@ -180,7 +180,34 @@ if (completed_operation == ERASING) {
 }
 ```
 
-**FTL（Flash Translation Layer）** 负责逻辑页到物理地址的映射、block 分配、以及 GC 时块擦除后的状态管理。GREEDY 策略选有效页最少的 block 作为 GC 受害者。
+### 2.3 FTL——页映射与垃圾回收
+
+NAND 不能原地覆盖写入，每次写入都要分配一个新 page，旧 page 标记为无效。FTL 用一张映射表管理这个逻辑页到物理页的对应关系：
+
+```cpp
+// 逻辑页 → (子阵列, block, page) 的映射
+map<logical_page, hbf_phys_addr_t> m_mapping;
+
+hbf_phys_addr_t translate(logical_page, is_write) {
+    if (is_write) invalidate(logical_page);  // 写前作废旧映射
+    // 从当前活跃 block 按顺序分配空闲 page
+    return active_block->next_free_page();
+}
+
+void invalidate(logical_page) {
+    // 逻辑页被覆盖 → 对应物理页标记无效，有效页计数 -1
+    block[mapping[logical_page].block].valid_pages--;
+    m_mapping.erase(logical_page);
+}
+```
+
+当空闲 block 数量低于 `overprovisioning` 阈值时触发 GC。GC 采用 GREEDY 策略：
+
+1. 遍历所有 block，找**有效页最少**的那个作为受害者
+2. 把受害者 block 中的有效页拷贝到新 block
+3. 擦除受害者 block，回收到空闲池
+
+这样写路径的整体流程是：`写缓冲 → MSHR → FTL 分配新 page → 检查 block 是否已擦除 → PROGRAM（或先 ERASE 再 PROGRAM）`。
 
 ---
 
