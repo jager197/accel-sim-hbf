@@ -1,8 +1,8 @@
 diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
-index 9055502c..ffa4e4b7 100644
+index 9055502c..49836c20 100644
 --- a/src/gpgpu-sim/gpu-sim.cc
 +++ b/src/gpgpu-sim/gpu-sim.cc
-@@ -322,6 +322,24 @@ void memory_config::reg_options(class OptionParser *opp) {
+@@ -322,6 +322,27 @@ void memory_config::reg_options(class OptionParser *opp) {
    // SST mode activate
    option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
                           "0");
@@ -23,11 +23,14 @@ index 9055502c..ffa4e4b7 100644
 +                         &hbf_max_outstanding,
 +                         "Max outstanding HBF requests (default 256, 0=unlimited)",
 +                         "256");
++  option_parser_register(opp, "-gpgpu_hbf_route_all", OPT_BOOL, &hbf_route_all,
++                         "Route ALL L2 misses to HBF (test mode, default=0)",
++                         "0");
 +
    m_address_mapping.addrdec_setoption(opp);
  }
  
-@@ -2011,6 +2029,11 @@ void gpgpu_sim::cycle() {
+@@ -2011,6 +2032,11 @@ void gpgpu_sim::cycle() {
        else
          m_memory_partition_unit[i]
              ->dram_cycle();  // Issue the dram command (scheduler + delay model)

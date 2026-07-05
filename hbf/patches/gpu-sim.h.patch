@@ -1,14 +1,15 @@
 diff --git a/src/gpgpu-sim/gpu-sim.h b/src/gpgpu-sim/gpu-sim.h
-index 98e52f4d..ee71ff77 100644
+index 98e52f4d..468c3360 100644
 --- a/src/gpgpu-sim/gpu-sim.h
 +++ b/src/gpgpu-sim/gpu-sim.h
-@@ -401,6 +401,20 @@ class memory_config {
+@@ -401,6 +401,22 @@ class memory_config {
    bool m_perf_sim_memcpy;
    bool simple_dram_model;
    bool SST_mode;
 +
 +  // HBF (High Bandwidth Flash) configuration - Phase 1
 +  bool hbf_enabled;
++  bool hbf_route_all;                // test mode: route ALL L2 misses to HBF
 +  unsigned long long hbf_base_addr;
 +  unsigned long long hbf_size;         // bytes
 +  unsigned hbf_latency;               // fixed latency in GPU cycles
@@ -17,6 +18,7 @@ index 98e52f4d..ee71ff77 100644
 +  // Check if an address falls in the HBF range
 +  bool is_hbf_addr(new_addr_type addr) const {
 +    if (!hbf_enabled) return false;
++    if (hbf_route_all) return true;
 +    return (addr >= hbf_base_addr && addr < hbf_base_addr + hbf_size);
 +  }
 +
