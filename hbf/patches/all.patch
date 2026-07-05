@@ -1,0 +1,262 @@
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index 9055502c..ffa4e4b7 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -322,6 +322,24 @@ void memory_config::reg_options(class OptionParser *opp) {
+   // SST mode activate
+   option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
+                          "0");
++
++  // HBF (High Bandwidth Flash) configuration - Phase 1
++  option_parser_register(opp, "-gpgpu_hbf_enabled", OPT_BOOL, &hbf_enabled,
++                         "Enable HBF memory tier (default=0)", "0");
++  option_parser_register(opp, "-gpgpu_hbf_base_addr", OPT_UINT64, &hbf_base_addr,
++                         "HBF base address in GPU memory space (default 256GB)",
++                         "274877906944");
++  option_parser_register(opp, "-gpgpu_hbf_size", OPT_UINT64, &hbf_size,
++                         "HBF capacity in bytes (default 512GB)",
++                         "549755813888");
++  option_parser_register(opp, "-gpgpu_hbf_latency", OPT_UINT32, &hbf_latency,
++                         "HBF fixed latency in GPU core cycles (default 10000)",
++                         "10000");
++  option_parser_register(opp, "-gpgpu_hbf_max_outstanding", OPT_UINT32,
++                         &hbf_max_outstanding,
++                         "Max outstanding HBF requests (default 256, 0=unlimited)",
++                         "256");
++
+   m_address_mapping.addrdec_setoption(opp);
+ }
+ 
+@@ -2011,6 +2029,11 @@ void gpgpu_sim::cycle() {
+       else
+         m_memory_partition_unit[i]
+             ->dram_cycle();  // Issue the dram command (scheduler + delay model)
++      // HBF cycle — process HBF controller if enabled
++      if (m_memory_config->hbf_enabled) {
++        m_memory_partition_unit[i]->hbf_cycle();
++      }
++
+       // Update performance counters for DRAM
+       if (m_config.g_power_simulation_enabled) {
+         m_memory_partition_unit[i]->set_dram_power_stats(
+diff --git a/src/gpgpu-sim/gpu-sim.h b/src/gpgpu-sim/gpu-sim.h
+index 98e52f4d..ee71ff77 100644
+--- a/src/gpgpu-sim/gpu-sim.h
++++ b/src/gpgpu-sim/gpu-sim.h
+@@ -401,6 +401,20 @@ class memory_config {
+   bool m_perf_sim_memcpy;
+   bool simple_dram_model;
+   bool SST_mode;
++
++  // HBF (High Bandwidth Flash) configuration - Phase 1
++  bool hbf_enabled;
++  unsigned long long hbf_base_addr;
++  unsigned long long hbf_size;         // bytes
++  unsigned hbf_latency;               // fixed latency in GPU cycles
++  unsigned hbf_max_outstanding;       // max outstanding requests in HBF queue
++
++  // Check if an address falls in the HBF range
++  bool is_hbf_addr(new_addr_type addr) const {
++    if (!hbf_enabled) return false;
++    return (addr >= hbf_base_addr && addr < hbf_base_addr + hbf_size);
++  }
++
+   gpgpu_context *gpgpu_ctx;
+ };
+ 
+diff --git a/src/gpgpu-sim/l2cache.cc b/src/gpgpu-sim/l2cache.cc
+index 52eed0ef..5586fff3 100644
+--- a/src/gpgpu-sim/l2cache.cc
++++ b/src/gpgpu-sim/l2cache.cc
+@@ -84,6 +84,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
+       m_gpu(gpu) {
+   m_dram = new dram_t(m_id, m_config, m_stats, this, gpu);
+ 
++  // Create HBF controller if HBF is enabled
++  if (m_config->hbf_enabled) {
++    m_hbf = new hbf_ctrl_t(m_id, m_config, m_stats, this, gpu);
++  } else {
++    m_hbf = NULL;
++  }
++
+   m_sub_partition = new memory_sub_partition
+       *[m_config->m_n_sub_partition_per_memory_channel];
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+@@ -110,6 +117,7 @@ void memory_partition_unit::handle_memcpy_to_gpu(
+ 
+ memory_partition_unit::~memory_partition_unit() {
+   delete m_dram;
++  if (m_hbf) delete m_hbf;
+   for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+        p++) {
+     delete m_sub_partition[p];
+@@ -233,6 +241,104 @@ int memory_partition_unit::global_sub_partition_id_to_local_id(
+           m_id * m_config->m_n_sub_partition_per_memory_channel);
+ }
+ 
++// =============================================================================
++// hbf_cycle() — 每周期 HBF 控制器调度入口
++//
++// 由 gpgpu_sim::cycle() (gpu-sim.cc:2013) 在每个 DRAM clock 周期调用。
++// 跟 dram_cycle() / simple_dram_model_cycle() 并列执行，共享同一套
++// L2 cache 和 sub_partition 仲裁机制。
++//
++// 分两步：收（HBF 返回 → L2）和 发（L2 miss → HBF）。
++//
++// 地址路由机制：
++//   本函数只处理 is_hbf_addr() 为 true 的请求（默认 256GB-768GB）。
++//   DRAM 路径（dram_cycle / simple_dram_model_cycle）里加了反向过滤
++//   —— is_hbf_addr() 为 true 的请求被 continue 跳过。
++//   这样 HBF 和 DRAM 各看各的地址段，互不干扰。
++// =============================================================================
++void memory_partition_unit::hbf_cycle() {
++  if (!m_hbf) return;
++
++// 从 HBF 返回队列取完成的请求，推回 L2 cache
++  //   hbf_ctrl_t::cycle() 已经把到期的请求搬到 m_returnq
++  //   → 这里 top() 看一眼队头
++  //   → 找到请求来源的 sub_partition
++  //   → 推进 sub_partition 的 dram_L2_queue（注意名字带 dram 是历史遗留，
++  //      实际上 HBF 返回也走同一个队列）
++  //   → 后续 L2 cache 会处理 fill，然后通过 interconnect 返回 SM core
++
++  mem_fetch *mf_return = m_hbf->return_queue_top();
++  if (mf_return) {
++    unsigned dest_global_spid = mf_return->get_sub_partition_id();
++    int dest_spid = global_sub_partition_id_to_local_id(dest_global_spid);
++    assert(m_sub_partition[dest_spid]->get_id() == dest_global_spid);
++    if (!m_sub_partition[dest_spid]->dram_L2_queue_full()) {
++      if (mf_return->get_access_type() == L1_WRBK_ACC) {
++        // 写回请求：不需要返回数据，标记完成即可
++        m_sub_partition[dest_spid]->set_done(mf_return);
++        delete mf_return;
++      } else {
++        // 读请求 / 普通写请求：推进 L2 的返回队列，等待 L2 cache fill
++        m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
++        mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
++                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        MEMPART_DPRINTF(
++            "mem_fetch request %p return from HBF to sub partition %d\n",
++            mf_return, dest_spid);
++      }
++      m_hbf->return_queue_pop();
++    }
++  }
++
++  // 驱动 HBF 控制器内部走一拍：把到期的请求从延迟 FIFO 搬到返回队列。
++  // 这些请求会在下一拍的"第一步"被取走。
++  m_hbf->cycle();
++
++  // ═══════════════════════════════════════════════════════════════════════
++  // 第二步：发 —— 从 sub_partition 的 L2_dram_queue 取 L2 miss 请求，
++  //         如果地址在 HBF 区间，推给 HBF 控制器。
++  //
++  // 仲裁机制（与 DRAM 路径共享）：
++  //   用 m_arbitration_metadata 管理信用额度，防止某个 sub_partition 独占。
++  //   last_borrower 记录上次发请求的 sub_partition，实现 round-robin。
++  //
++  // 关键分支：
++  //   is_hbf_addr(mf->get_addr()) → false: continue 跳过，留给 DRAM 路径
++  //                              → true:  推进 HBF 的延迟 FIFO
++  //
++  // 每周期最多发一个请求（break），与 DRAM 路径一致。
++  // ═══════════════════════════════════════════════════════════════════════
++  int last_issued_partition = m_arbitration_metadata.last_borrower();
++  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
++       p++) {
++    int spid = (p + last_issued_partition + 1) %
++               m_config->m_n_sub_partition_per_memory_channel;
++    if (!m_sub_partition[spid]->L2_dram_queue_empty() &&
++        can_issue_to_dram(spid)) {
++      mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
++
++      // ═══ HBF vs DRAM 路由的关键判断 ═══
++      // 地址在 HBF 区间（默认 256GB-768GB）→ 走 HBF
++      // 地址在 DRAM 区间（默认 0-256GB）  → continue，留给 dram_cycle()
++      if (!m_config->is_hbf_addr(mf->get_addr())) continue;
++
++      // HBF 队列满了就不再发了（避免无限排队）
++      if (m_hbf->full(mf->is_write())) break;
++
++      // 从 L2 请求队列弹出，推进 HBF 延迟 FIFO
++      m_sub_partition[spid]->L2_dram_queue_pop();
++      MEMPART_DPRINTF(
++          "Issue mem_fetch request %p from sub partition %d to HBF\n", mf,
++          spid);
++      m_hbf->push(mf);
++      mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE,
++                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++      m_arbitration_metadata.borrow_credit(spid);
++      break;  // 每周期只发一个请求到 HBF
++    }
++  }
++}
++
+ void memory_partition_unit::simple_dram_model_cycle() {
+   // pop completed memory request from dram and push it to dram-to-L2 queue
+   // of the original sub partition
+@@ -289,6 +395,9 @@ void memory_partition_unit::simple_dram_model_cycle() {
+       MEMPART_DPRINTF(
+           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+           spid);
++      // Skip HBF-addressed requests in simple_dram_model path
++      if (m_config->is_hbf_addr(mf->get_addr())) continue;
++
+       dram_delay_t d;
+       d.req = mf;
+       d.ready_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+@@ -347,6 +456,9 @@ void memory_partition_unit::dram_cycle() {
+       mem_fetch *mf = m_sub_partition[spid]->L2_dram_queue_top();
+       if (m_dram->full(mf->is_write())) break;
+ 
++      // Skip HBF-addressed requests — handled by hbf_cycle()
++      if (m_config->is_hbf_addr(mf->get_addr())) continue;
++
+       m_sub_partition[spid]->L2_dram_queue_pop();
+       MEMPART_DPRINTF(
+           "Issue mem_fetch request %p from sub partition %d to dram\n", mf,
+@@ -416,6 +528,7 @@ void memory_partition_unit::print(FILE *fp) const {
+       fprintf(fp, " <NULL mem_fetch?>\n");
+   }
+   m_dram->print(fp);
++  if (m_hbf) m_hbf->print_stat(fp);
+ }
+ 
+ memory_sub_partition::memory_sub_partition(unsigned sub_partition_id,
+diff --git a/src/gpgpu-sim/l2cache.h b/src/gpgpu-sim/l2cache.h
+index 65c9c38b..6d56cde3 100644
+--- a/src/gpgpu-sim/l2cache.h
++++ b/src/gpgpu-sim/l2cache.h
+@@ -34,6 +34,7 @@
+ 
+ #include "../abstract_hardware_model.h"
+ #include "dram.h"
++#include "hbf.h"
+ 
+ #include <list>
+ #include <queue>
+@@ -82,11 +83,15 @@ class memory_partition_unit {
+   void cache_cycle(unsigned cycle);
+   void dram_cycle();
+   void simple_dram_model_cycle();
++  void hbf_cycle();
+ 
+   void set_done(mem_fetch *mf);
+ 
+   void visualizer_print(gzFile visualizer_file) const;
+-  void print_stat(FILE *fp) { m_dram->print_stat(fp); }
++  void print_stat(FILE *fp) {
++    m_dram->print_stat(fp);
++    if (m_hbf) m_hbf->print_stat(fp);
++  }
+   void visualize() const { m_dram->visualize(); }
+   void print(FILE *fp) const;
+   void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
+@@ -116,6 +121,7 @@ class memory_partition_unit {
+   class memory_stats_t *m_stats;
+   class memory_sub_partition **m_sub_partition;
+   class dram_t *m_dram;
++  class hbf_ctrl_t *m_hbf;
+ 
+   class arbitration_metadata {
+    public:
