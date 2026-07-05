@@ -10,22 +10,26 @@ HBF is still in early stages — first chip samples are expected in 2H 2026, wit
 
 My research involves HBF-integrated GPU architectures. Since there's no publicly available simulation platform, I decided to build one myself.
 
-## What's Done
+## Versions
 
-A fixed-latency HBF controller that can run basic memory accesses:
+### v0.2 (current) — Cycle-Accurate NAND Controller
 
-- Address-range partitioning: requests above a configurable base address are routed to HBF, everything else goes to DRAM
-- HBF requests enter a fixed-latency FIFO and return after `hbf_latency` cycles
-- Configurable: HBF capacity, latency, max outstanding requests
-- Statistics: read/write counts, average latency, queue depth per partition
+Built on v0.1, replaces the fixed-latency FIFO with a real flash controller:
 
-## Planned
+- **NAND sub-array state machines** — IDLE → READING → PROGRAMMING → ERASING, each with configurable per-operation latency (tR / tPROG / tBERS). Follows the `bank_t` pattern from GPGPU-Sim's DRAM model.
+- **MSHR coalescing** — multiple 64B cache-line requests to the same 4KB NAND page are merged into a single page read. Verified: 75% coalescing rate on a rodinia trace (16 requests → 4 page reads).
+- **Power-limited parallelism** — configurable max simultaneous sub-array operations (`hbf_max_active`).
+- **Page-level FTL** — simple direct-mapped logical→physical translation with GREEDY garbage collection.
+- **10 new config options** — `hbf_use_phase2`, `hbf_num_subarrays`, `hbf_max_active`, `hbf_tR`, `hbf_tPROG`, `hbf_tBERS`, `hbf_page_size`, `hbf_pages_per_block`, `hbf_mshr_enabled`, `hbf_ftl_enabled`.
 
-- Cycle-accurate NAND sub-array state machines (read/program/erase timing)
-- Logic die parallel scheduler (how many sub-arrays can be active simultaneously)
-- MSHR coalescing (merge multiple 64B cache-line requests into one NAND page read)
-- Simple page-level FTL with garbage collection
-- Write buffer
+### v0.1 — Fixed-Latency HBF
+
+Basic memory tier alongside DRAM:
+
+- Address-range partitioning via `is_hbf_addr()` in `memory_config`
+- Fixed-latency FIFO (`hbf_ctrl_t`), configured by `hbf_latency`
+- `hbf_route_all` test mode for forcing all L2 misses through HBF
+- Read/write/latency/queue depth statistics per partition
 
 ## How to Run
 
@@ -35,26 +39,31 @@ Prerequisites: Ubuntu 20.04+, CUDA 11–12, an NVIDIA GPU.
 # Build
 export CUDA_INSTALL_PATH=/usr/local/cuda
 source ./gpu-simulator/setup_environment.sh
+bash setup_hbf.sh                    # apply HBF patches to gpgpu-sim
 make -j$(nproc) -C ./gpu-simulator
 
-# Baseline test (DRAM only)
+# Baseline test (DRAM only, PTX mode)
 bash run_smoke_test.sh
 
-# HBF test
+# HBF test (PTX mode)
 bash run_hbf_test.sh
+
+# Trace-driven test (requires pre-downloaded traces)
+./util/tracer_nvbit/install_nvbit.sh  # one-time
+make -C ./util/tracer_nvbit/
+# Then generate traces on real GPU and replay with accel-sim.out
 ```
 
-HBF is configured by adding these options to `gpgpusim.config`:
+A ready-to-use HBF config is at `hbf/gpgpusim_hbf.config`. Key Phase 2 options:
 
 ```
 -gpgpu_hbf_enabled 1
--gpgpu_hbf_base_addr 274877906944
--gpgpu_hbf_size 549755813888
--gpgpu_hbf_latency 10000
--gpgpu_hbf_max_outstanding 256
+-gpgpu_hbf_use_phase2 1
+-gpgpu_hbf_num_subarrays 16384
+-gpgpu_hbf_max_active 64
+-gpgpu_hbf_tR 15000
+-gpgpu_hbf_mshr_enabled 1
 ```
-
-A ready-to-use HBF config is at `gpu-simulator/gpgpu-sim/configs/tested-cfgs/SM7_QV100/gpgpusim_hbf.config`.
 
 ## References
 
