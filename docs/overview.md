@@ -20,7 +20,7 @@ SM Core → L1 → Interconnect → L2 Cache
                             L2 miss
                                   │
                     ┌─────────────┴─────────────┐
-                    │   is_hbf_addr(addr)?       │
+                    │   is_hbf_addr(addr)?      │
                     └─────────────┬─────────────┘
                           │               │
                     HBF range        DRAM range
