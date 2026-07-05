@@ -188,6 +188,34 @@ hbf_ftl_t::block_key_t hbf_ftl_t::allocate_block(unsigned preferred_subarray) {
 }
 
 // ============================================================================
+// Block erase state tracking
+// ============================================================================
+bool hbf_ftl_t::is_block_erased(unsigned subarray, unsigned block) const {
+  hbf_ftl_t::block_key_t bk;
+  bk.subarray = subarray;
+  bk.block    = block;
+  auto it = m_blocks.find(bk);
+  if (it == m_blocks.end()) return false;
+  return it->second.erased;
+}
+
+void hbf_ftl_t::mark_block_erasing(unsigned subarray, unsigned block) {
+  hbf_ftl_t::block_key_t bk;
+  bk.subarray = subarray;
+  bk.block    = block;
+  m_blocks[bk].erased = false;  // block is being erased, not yet ready
+}
+
+void hbf_ftl_t::mark_block_erased(unsigned subarray, unsigned block) {
+  hbf_ftl_t::block_key_t bk;
+  bk.subarray = subarray;
+  bk.block    = block;
+  m_blocks[bk].erased = true;
+  m_blocks[bk].free_pages = m_blocks[bk].total_pages;
+  m_blocks[bk].next_free_page = 0;
+}
+
+// ============================================================================
 // Statistics printing
 // ============================================================================
 void hbf_ftl_t::print_stat(FILE *fp) const {

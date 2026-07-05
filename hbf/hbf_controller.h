@@ -52,8 +52,6 @@ class hbf_controller_t {
   unsigned long long addr_to_page(new_addr_type addr) const;
   // Schedule: assign MSHR entries to idle sub-arrays
   void schedule_operations();
-  // Complete a page operation: all pending requests get their data
-  void complete_page_op(unsigned subarray_id);
 
   unsigned m_id;
   const memory_config *m_config;
@@ -70,14 +68,18 @@ class hbf_controller_t {
   // Multiple 64B requests to the same 4KB page are coalesced into
   // a single NAND page read. This is the key mechanism that enables
   // HBF to match HBM bandwidth despite µs-scale NAND latency.
+  // MSHR operation state (for erase-before-write flow)
+  enum mshr_op_t { OP_WAITING, OP_READING, OP_ERASING, OP_PROGRAMMING };
+
   struct mshr_entry_t {
     unsigned long long phys_page;       // physical page address
     unsigned subarray_id;              // which sub-array (if in_flight)
     unsigned block_id;                 // which block
     unsigned page_offset;             // offset within block
-    bool in_flight;                   // read/program issued to sub-array?
+    mshr_op_t op_state;              // current operation: WAITING/ERASING/PROGRAMMING/READING
+    bool needs_erase;                // true if block must be erased before programming
+    unsigned long long issue_cycle;   // when operation was issued to sub-array
     std::vector<mem_fetch *> pending; // requests waiting for this page
-    unsigned long long issue_cycle;   // when was this entry created
   };
   std::map<unsigned long long, mshr_entry_t> m_mshr;
   std::list<unsigned long long> m_mshr_queue;  // FIFO of pages waiting for sub-array
@@ -87,6 +89,19 @@ class hbf_controller_t {
 
   // Simple FTL (page-level mapping)
   hbf_ftl_t *m_ftl;
+
+  // Write buffer: coalesce writes to same page before creating MSHR entry.
+  // Hides tPROG latency by batching writes to the same page.
+  struct write_buffer_entry_t {
+    unsigned long long page_addr;
+    std::vector<mem_fetch *> requests;
+    unsigned long long first_arrival;
+  };
+  std::map<unsigned long long, write_buffer_entry_t> m_write_buffer;
+  unsigned m_write_buffer_max;  // max entries before forced flush
+
+  void flush_write_buffer();
+  void flush_write_buffer_entry(unsigned long long page_addr);
 
   // Statistics
   unsigned long long n_page_reads;

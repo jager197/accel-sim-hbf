@@ -47,6 +47,11 @@ class hbf_ftl_t {
   // Check if GC is needed
   bool needs_gc() const;
 
+  // Block erase state tracking (for erase-before-write)
+  bool is_block_erased(unsigned subarray, unsigned block) const;
+  void mark_block_erasing(unsigned subarray, unsigned block);
+  void mark_block_erased(unsigned subarray, unsigned block);
+
   // Statistics
   void print_stat(FILE *fp) const;
 

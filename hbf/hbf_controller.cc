@@ -48,6 +48,9 @@ hbf_controller_t::hbf_controller_t(unsigned partition_id,
     m_ftl = NULL;
   }
 
+  // Write buffer: max entries before forced flush (default 32)
+  m_write_buffer_max = 32;
+
   // Statistics
   n_page_reads       = 0;
   n_page_programs    = 0;
@@ -90,9 +93,10 @@ bool hbf_controller_t::full(bool is_write) const {
 // ============================================================================
 // push() — entry point for L2 miss requests
 //
-// 1. Convert 64B address → page address
-// 2. Check MSHR: if page already pending, coalesce (MSHR hit)
-// 3. Otherwise, create new MSHR entry and queue for scheduling
+// Reads flow directly into MSHR (same as before).
+// Writes go through a write buffer first: multiple writes to the same page
+// are coalesced in the buffer, then flushed to MSHR when the buffer is full
+// or when a read to the same page arrives.
 // ============================================================================
 void hbf_controller_t::push(mem_fetch *data) {
   unsigned long long current_cycle =
@@ -102,194 +106,264 @@ void hbf_controller_t::push(mem_fetch *data) {
 
   unsigned long long page_addr = addr_to_page(data->get_addr());
 
-  // Check MSHR (only if enabled): is this page already being fetched?
+  // Writes: buffer first, then flush to MSHR
+  if (data->get_is_write()) {
+    auto wb_it = m_write_buffer.find(page_addr);
+    if (wb_it != m_write_buffer.end()) {
+      // Coalesce into existing write buffer entry
+      wb_it->second.requests.push_back(data);
+      return;
+    }
+    // New write buffer entry
+    write_buffer_entry_t wb;
+    wb.page_addr = page_addr;
+    wb.first_arrival = current_cycle;
+    wb.requests.push_back(data);
+    m_write_buffer[page_addr] = wb;
+
+    // Flush if buffer is full
+    if (m_write_buffer.size() >= m_write_buffer_max) {
+      flush_write_buffer();
+    }
+    return;
+  }
+
+  // Reads: flush any buffered writes to same page first (read-after-write)
+  auto wb_it = m_write_buffer.find(page_addr);
+  if (wb_it != m_write_buffer.end()) {
+    flush_write_buffer_entry(wb_it->first);
+  }
+
+  // Check MSHR (only if enabled)
   if (m_config->hbf_mshr_enabled) {
     auto it = m_mshr.find(page_addr);
     if (it != m_mshr.end()) {
-      // MSHR HIT: coalesce — add this request to the pending list
       it->second.pending.push_back(data);
       n_mshr_hits++;
       return;
     }
   }
 
-  // MSHR MISS (or MSHR disabled): create new entry for this request
-  // When MSHR is disabled, use a unique key per-request to avoid coalescing
+  // Create MSHR entry for read
   unsigned long long entry_key = m_config->hbf_mshr_enabled
                                      ? page_addr
                                      : (page_addr << 20) | n_total_requests;
   mshr_entry_t entry;
   entry.phys_page   = page_addr;
-  entry.in_flight   = false;
-  entry.issue_cycle = current_cycle;
+  entry.op_state    = OP_WAITING;
+  entry.needs_erase = false;
   entry.pending.push_back(data);
 
-  // FTL translation (if enabled)
   if (m_ftl) {
-    hbf_phys_addr_t phys = m_ftl->translate(page_addr, data->get_is_write());
+    hbf_phys_addr_t phys = m_ftl->translate(page_addr, false);
     entry.subarray_id = phys.subarray;
     entry.block_id    = phys.block;
     entry.page_offset = phys.page;
   } else {
-    // Direct-mapped fallback: distribute pages round-robin across sub-arrays
     entry.subarray_id = page_addr % m_num_subarrays;
-    entry.block_id    = (page_addr / m_num_subarrays) %
-                        (1024 * 1024 / m_config->hbf_page_size);  // rough
+    entry.block_id    = (page_addr / m_num_subarrays) % 1024;
     entry.page_offset = 0;
   }
 
   m_mshr[entry_key] = entry;
   m_mshr_queue.push_back(entry_key);
+  if (m_mshr_queue.size() > max_queue_depth) max_queue_depth = m_mshr_queue.size();
+}
 
-  // Track queue depth
-  if (m_mshr_queue.size() > max_queue_depth) {
-    max_queue_depth = m_mshr_queue.size();
+// Flush all buffered writes to MSHR
+void hbf_controller_t::flush_write_buffer() {
+  std::vector<unsigned long long> keys;
+  for (auto &kv : m_write_buffer) keys.push_back(kv.first);
+  for (auto key : keys) flush_write_buffer_entry(key);
+  m_write_buffer.clear();
+}
+
+// Flush a single write buffer entry to MSHR
+void hbf_controller_t::flush_write_buffer_entry(unsigned long long page_addr) {
+  auto it = m_write_buffer.find(page_addr);
+  if (it == m_write_buffer.end()) return;
+  write_buffer_entry_t &wb = it->second;
+  if (wb.requests.empty()) { m_write_buffer.erase(it); return; }
+
+  unsigned long long wb_page_addr = wb.page_addr;
+  unsigned long long entry_key = m_config->hbf_mshr_enabled
+                                     ? wb_page_addr
+                                     : (wb_page_addr << 20) | n_total_requests;
+
+  mshr_entry_t entry;
+  entry.phys_page   = page_addr;
+  entry.op_state    = OP_WAITING;
+  entry.needs_erase = false;
+  entry.pending     = std::move(wb.requests);
+
+  if (m_ftl) {
+    hbf_phys_addr_t phys = m_ftl->translate(page_addr, true);
+    entry.subarray_id = phys.subarray;
+    entry.block_id    = phys.block;
+    entry.page_offset = phys.page;
+
+    // Check if target block is erased — NAND can't program unless erased
+    if (!m_ftl->is_block_erased(phys.subarray, phys.block)) {
+      entry.needs_erase = true;
+    }
+  } else {
+    entry.subarray_id = page_addr % m_num_subarrays;
+    entry.block_id    = (page_addr / m_num_subarrays) % 1024;
+    entry.page_offset = 0;
   }
+
+  m_mshr[entry_key] = entry;
+  m_mshr_queue.push_back(entry_key);
+  if (m_mshr_queue.size() > max_queue_depth) max_queue_depth = m_mshr_queue.size();
 }
 
 // ============================================================================
 // cycle() — per-cycle HBF controller logic
 //
 // 1. Sub-array state machines: decrement timing counters
-// 2. Check for completed operations → return data for all pending requests
+// 2. Completed operations: READ → return data; ERASE → schedule program
 // 3. Schedule new operations: assign MSHR entries to idle sub-arrays
+// 4. Flush write buffer if entries are old enough
 // ============================================================================
 void hbf_controller_t::cycle() {
   unsigned long long current_cycle =
       m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
 
-  // Track active cycles
-  if (!m_mshr_queue.empty() || m_mshr.size() > 0) {
+  if (!m_mshr_queue.empty() || m_mshr.size() > 0 || !m_write_buffer.empty()) {
     n_cycles_active++;
   }
 
-  // Step 1: Cycle all sub-arrays, collect completed page addresses
-  std::vector<unsigned long long> completed_pages;
+  // Step 1: Cycle all sub-arrays, track completions
+  struct completion_t {
+    unsigned long long mshr_key;
+    unsigned subarray_id;
+    hbf_subarray_t::state_t prev_state;
+  };
+  std::vector<completion_t> completions;
+
   for (unsigned i = 0; i < m_num_subarrays; i++) {
     hbf_subarray_t *sa = m_subarrays[i];
-
-    hbf_subarray_t::state_t prev_state = sa->get_state();
+    hbf_subarray_t::state_t prev = sa->get_state();
     sa->cycle();
-    hbf_subarray_t::state_t new_state = sa->get_state();
-
-    // If transitioned from non-IDLE to IDLE, operation completed
-    if (prev_state != hbf_subarray_t::IDLE && new_state == hbf_subarray_t::IDLE) {
-      // Find the MSHR entry that was using this sub-array
+    if (prev != hbf_subarray_t::IDLE && sa->get_state() == hbf_subarray_t::IDLE) {
       for (auto &kv : m_mshr) {
-        if (kv.second.in_flight && kv.second.subarray_id == i) {
-          completed_pages.push_back(kv.first);
-          break;  // one entry per sub-array at a time
+        if (kv.second.op_state != OP_WAITING && kv.second.subarray_id == i) {
+          completions.push_back({kv.first, i, prev});
+          break;
         }
       }
     }
   }
 
-  // Process completed page operations
-  for (unsigned long long page_addr : completed_pages) {
-    auto it = m_mshr.find(page_addr);
+  // Step 2: Process completions
+  for (auto &c : completions) {
+    auto it = m_mshr.find(c.mshr_key);
     if (it == m_mshr.end()) continue;
 
-    // Return data for all pending requests on this page
-    for (mem_fetch *mf : it->second.pending) {
-      if (mf->get_access_type() != L1_WRBK_ACC &&
-          mf->get_access_type() != L2_WRBK_ACC) {
-        mf->set_reply();
+    if (c.prev_state == hbf_subarray_t::ERASING) {
+      // Erase just completed → block is now erased, mark and schedule program
+      if (m_ftl)
+        m_ftl->mark_block_erased(it->second.subarray_id, it->second.block_id);
+      it->second.needs_erase = false;
+      it->second.op_state = OP_WAITING;
+      // Don't erase from queue — it will be picked up for programming next cycle
+    } else {
+      // Read or program completed → return data to requesters
+      unsigned long long op_cycle = 0;
+      for (mem_fetch *mf : it->second.pending) {
+        if (mf->get_access_type() != L1_WRBK_ACC &&
+            mf->get_access_type() != L2_WRBK_ACC) {
+          mf->set_reply();
+        }
+        if (!m_returnq->full()) m_returnq->push(mf);
+        unsigned long long latency = current_cycle - it->second.issue_cycle;
+        if (mf->get_is_write()) {
+          total_write_latency += latency; n_bytes_written += mf->get_data_size();
+        } else {
+          total_read_latency += latency; n_bytes_read += mf->get_data_size();
+        }
       }
-      if (!m_returnq->full()) {
-        m_returnq->push(mf);
-      }
-      unsigned long long latency = current_cycle - it->second.issue_cycle;
-      if (mf->get_is_write()) {
-        total_write_latency += latency;
-        n_bytes_written += mf->get_data_size();
-      } else {
-        total_read_latency += latency;
-        n_bytes_read += mf->get_data_size();
-      }
+      m_mshr.erase(it);
     }
-    // Remove MSHR entry
-    m_mshr.erase(it);
   }
 
-  // Step 2: Schedule new operations
+  // Step 3: Flush write buffer entries that have been waiting too long
+  static const unsigned WRITE_BUFFER_TIMEOUT = 1000;
+  auto wb_it = m_write_buffer.begin();
+  while (wb_it != m_write_buffer.end()) {
+    if (current_cycle - wb_it->second.first_arrival > WRITE_BUFFER_TIMEOUT) {
+      flush_write_buffer_entry((wb_it++)->first);
+    } else {
+      ++wb_it;
+    }
+  }
+
+  // Step 4: Schedule new operations
   schedule_operations();
 }
 
 // ============================================================================
 // schedule_operations() — assign MSHR queue entries to idle sub-arrays
 //
-// Simple round-robin: walk the MSHR queue, assign each entry to the first
-// available idle sub-array. Limited by max_active (power cap).
+// Read entries: assign to sub-array, issue READ.
+// Write entries:
+//   - If block not erased: issue ERASE first → later issue PROGRAM.
+//   - If block erased: issue PROGRAM directly.
+// Power-limited by max_active (count of non-idle sub-arrays).
 // ============================================================================
 void hbf_controller_t::schedule_operations() {
   unsigned active_count = 0;
   for (unsigned i = 0; i < m_num_subarrays; i++) {
     if (!m_subarrays[i]->is_idle()) active_count++;
   }
-
-  // Don't exceed power-limited maximum
   if (active_count >= m_max_active) return;
 
   auto it = m_mshr_queue.begin();
   while (it != m_mshr_queue.end() && active_count < m_max_active) {
-    unsigned long long page_addr = *it;
-    auto mshr_it = m_mshr.find(page_addr);
+    auto mshr_it = m_mshr.find(*it);
+    if (mshr_it == m_mshr.end()) { it = m_mshr_queue.erase(it); continue; }
+    if (mshr_it->second.op_state != OP_WAITING) { ++it; continue; }
 
-    // Entry might have been removed (edge case)
-    if (mshr_it == m_mshr.end()) {
-      it = m_mshr_queue.erase(it);
-      continue;
-    }
-
-    // Already in flight? Skip
-    if (mshr_it->second.in_flight) {
-      ++it;
-      continue;
-    }
-
-    // Find an idle sub-array
-    unsigned target_sa = mshr_it->second.subarray_id;
-    bool assigned = false;
-
-    // Try the preferred sub-array first
-    if (m_subarrays[target_sa]->is_idle()) {
-      assigned = true;
-    } else {
-      // Fallback: find any idle sub-array
+    // Find idle sub-array (prefer preferred, fallback to any)
+    unsigned sa_id = mshr_it->second.subarray_id;
+    if (!m_subarrays[sa_id]->is_idle()) {
+      bool found = false;
       for (unsigned i = 0; i < m_num_subarrays; i++) {
-        if (m_subarrays[i]->is_idle()) {
-          target_sa = i;
-          mshr_it->second.subarray_id = i;
-          assigned = true;
-          break;
-        }
+        if (m_subarrays[i]->is_idle()) { sa_id = i; mshr_it->second.subarray_id = i; found = true; break; }
       }
+      if (!found) { ++it; continue; }
     }
 
-    if (assigned) {
-      hbf_subarray_t *sa = m_subarrays[target_sa];
-      mem_fetch *first_mf = mshr_it->second.pending.front();
+    hbf_subarray_t *sa = m_subarrays[sa_id];
+    mem_fetch *first_mf = mshr_it->second.pending.front();
 
-      if (first_mf->get_is_write()) {
-        // Write: need to program a page
-        // If FTL says block needs erase, do that first (simplified: always program)
+    if (first_mf->get_is_write()) {
+      // ═══ Write path: erase-before-write ═══
+      if (mshr_it->second.needs_erase) {
+        // Block not erased → issue ERASE first
+        if (m_ftl) m_ftl->mark_block_erasing(sa_id, mshr_it->second.block_id);
+        sa->start_erase(mshr_it->second.block_id);
+        mshr_it->second.op_state = OP_ERASING;
+        mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        n_block_erases++;
+      } else {
+        // Block erased → issue PROGRAM
         sa->start_program(mshr_it->second.page_offset,
                           mshr_it->second.block_id);
+        mshr_it->second.op_state = OP_PROGRAMMING;
+        mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
         n_page_programs++;
-      } else {
-        // Read
-        sa->start_read(mshr_it->second.page_offset,
-                       mshr_it->second.block_id);
-        n_page_reads++;
       }
-
-      mshr_it->second.in_flight = true;
-      mshr_it->second.subarray_id = target_sa;
-      it = m_mshr_queue.erase(it);
-      active_count++;
     } else {
-      ++it;  // No idle sub-array available, try next cycle
+      // Read
+      sa->start_read(mshr_it->second.page_offset, mshr_it->second.block_id);
+      mshr_it->second.op_state = OP_READING;
+      mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+      n_page_reads++;
     }
+
+    it = m_mshr_queue.erase(it);
+    active_count++;
   }
 }
 
