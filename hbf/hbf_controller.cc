@@ -114,6 +114,10 @@ void hbf_controller_t::push(mem_fetch *data) {
   }
 
   // MSHR MISS (or MSHR disabled): create new entry for this request
+  // When MSHR is disabled, use a unique key per-request to avoid coalescing
+  unsigned long long entry_key = m_config->hbf_mshr_enabled
+                                     ? page_addr
+                                     : (page_addr << 20) | n_total_requests;
   mshr_entry_t entry;
   entry.phys_page   = page_addr;
   entry.in_flight   = false;
@@ -134,8 +138,8 @@ void hbf_controller_t::push(mem_fetch *data) {
     entry.page_offset = 0;
   }
 
-  m_mshr[page_addr] = entry;
-  m_mshr_queue.push_back(page_addr);
+  m_mshr[entry_key] = entry;
+  m_mshr_queue.push_back(entry_key);
 
   // Track queue depth
   if (m_mshr_queue.size() > max_queue_depth) {
@@ -159,11 +163,11 @@ void hbf_controller_t::cycle() {
     n_cycles_active++;
   }
 
-  // Step 1: Cycle all sub-arrays (decrement timing counters)
+  // Step 1: Cycle all sub-arrays, collect completed page addresses
+  std::vector<unsigned long long> completed_pages;
   for (unsigned i = 0; i < m_num_subarrays; i++) {
     hbf_subarray_t *sa = m_subarrays[i];
 
-    // Check if this sub-array just completed an operation
     hbf_subarray_t::state_t prev_state = sa->get_state();
     sa->cycle();
     hbf_subarray_t::state_t new_state = sa->get_state();
@@ -171,35 +175,40 @@ void hbf_controller_t::cycle() {
     // If transitioned from non-IDLE to IDLE, operation completed
     if (prev_state != hbf_subarray_t::IDLE && new_state == hbf_subarray_t::IDLE) {
       // Find the MSHR entry that was using this sub-array
-      unsigned completed_page = sa->get_curr_page();
-      // Walk MSHR to find the matching entry
       for (auto &kv : m_mshr) {
         if (kv.second.in_flight && kv.second.subarray_id == i) {
-          // Return data for all pending requests on this page
-          for (mem_fetch *mf : kv.second.pending) {
-            if (mf->get_access_type() != L1_WRBK_ACC &&
-                mf->get_access_type() != L2_WRBK_ACC) {
-              mf->set_reply();
-            }
-            if (!m_returnq->full()) {
-              m_returnq->push(mf);
-            }
-            // Track statistics
-            unsigned long long latency = current_cycle - kv.second.issue_cycle;
-            if (mf->get_is_write()) {
-              total_write_latency += latency;
-              n_bytes_written += mf->get_data_size();
-            } else {
-              total_read_latency += latency;
-              n_bytes_read += mf->get_data_size();
-            }
-          }
-          // Remove MSHR entry
-          m_mshr.erase(kv.first);
-          break;
+          completed_pages.push_back(kv.first);
+          break;  // one entry per sub-array at a time
         }
       }
     }
+  }
+
+  // Process completed page operations
+  for (unsigned long long page_addr : completed_pages) {
+    auto it = m_mshr.find(page_addr);
+    if (it == m_mshr.end()) continue;
+
+    // Return data for all pending requests on this page
+    for (mem_fetch *mf : it->second.pending) {
+      if (mf->get_access_type() != L1_WRBK_ACC &&
+          mf->get_access_type() != L2_WRBK_ACC) {
+        mf->set_reply();
+      }
+      if (!m_returnq->full()) {
+        m_returnq->push(mf);
+      }
+      unsigned long long latency = current_cycle - it->second.issue_cycle;
+      if (mf->get_is_write()) {
+        total_write_latency += latency;
+        n_bytes_written += mf->get_data_size();
+      } else {
+        total_read_latency += latency;
+        n_bytes_read += mf->get_data_size();
+      }
+    }
+    // Remove MSHR entry
+    m_mshr.erase(it);
   }
 
   // Step 2: Schedule new operations
