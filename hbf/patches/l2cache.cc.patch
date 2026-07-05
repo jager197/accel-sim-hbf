@@ -1,5 +1,5 @@
 diff --git a/src/gpgpu-sim/l2cache.cc b/src/gpgpu-sim/l2cache.cc
-index 52eed0ef..5586fff3 100644
+index 52eed0ef..a6f8924f 100644
 --- a/src/gpgpu-sim/l2cache.cc
 +++ b/src/gpgpu-sim/l2cache.cc
 @@ -84,6 +84,13 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
@@ -8,7 +8,7 @@ index 52eed0ef..5586fff3 100644
  
 +  // Create HBF controller if HBF is enabled
 +  if (m_config->hbf_enabled) {
-+    m_hbf = new hbf_ctrl_t(m_id, m_config, m_stats, this, gpu);
++    m_hbf = new hbf_controller_t(m_id, m_config, m_stats, this, gpu);
 +  } else {
 +    m_hbf = NULL;
 +  }
@@ -47,7 +47,7 @@ index 52eed0ef..5586fff3 100644
 +  if (!m_hbf) return;
 +
 +// 从 HBF 返回队列取完成的请求，推回 L2 cache
-+  //   hbf_ctrl_t::cycle() 已经把到期的请求搬到 m_returnq
++  //   hbf_controller_t::cycle() 已经把到期的请求搬到 m_returnq
 +  //   → 这里 top() 看一眼队头
 +  //   → 找到请求来源的 sub_partition
 +  //   → 推进 sub_partition 的 dram_L2_queue（注意名字带 dram 是历史遗留，

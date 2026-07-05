@@ -1,8 +1,8 @@
 diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
-index 9055502c..49836c20 100644
+index 9055502c..79afec38 100644
 --- a/src/gpgpu-sim/gpu-sim.cc
 +++ b/src/gpgpu-sim/gpu-sim.cc
-@@ -322,6 +322,27 @@ void memory_config::reg_options(class OptionParser *opp) {
+@@ -322,6 +322,63 @@ void memory_config::reg_options(class OptionParser *opp) {
    // SST mode activate
    option_parser_register(opp, "-SST_mode", OPT_BOOL, &SST_mode, "SST mode",
                           "0");
@@ -27,10 +27,46 @@ index 9055502c..49836c20 100644
 +                         "Route ALL L2 misses to HBF (test mode, default=0)",
 +                         "0");
 +
++  // Phase 2: cycle-accurate NAND controller
++  option_parser_register(opp, "-gpgpu_hbf_use_phase2", OPT_BOOL, &hbf_use_phase2,
++                         "Use Phase 2 cycle-accurate HBF controller (default=0)",
++                         "0");
++  option_parser_register(opp, "-gpgpu_hbf_num_subarrays", OPT_UINT32,
++                         &hbf_num_subarrays,
++                         "Number of NAND sub-arrays (default 16384)", "16384");
++  option_parser_register(opp, "-gpgpu_hbf_page_size", OPT_UINT32,
++                         &hbf_page_size,
++                         "NAND page size in bytes (default 4096)", "4096");
++  option_parser_register(opp, "-gpgpu_hbf_pages_per_block", OPT_UINT32,
++                         &hbf_pages_per_block,
++                         "Pages per erase block (default 64)", "64");
++  option_parser_register(opp, "-gpgpu_hbf_max_active", OPT_UINT32,
++                         &hbf_max_active,
++                         "Max concurrent sub-array operations (default 64)",
++                         "64");
++  option_parser_register(opp, "-gpgpu_hbf_tR", OPT_UINT32, &hbf_tR,
++                         "NAND page read latency in cycles (default 15000)",
++                         "15000");
++  option_parser_register(opp, "-gpgpu_hbf_tPROG", OPT_UINT32, &hbf_tPROG,
++                         "NAND page program latency in cycles (default 200000)",
++                         "200000");
++  option_parser_register(opp, "-gpgpu_hbf_tBERS", OPT_UINT32, &hbf_tBERS,
++                         "NAND block erase latency in cycles (default 2000000)",
++                         "2000000");
++  option_parser_register(opp, "-gpgpu_hbf_mshr_enabled", OPT_BOOL,
++                         &hbf_mshr_enabled,
++                         "Enable MSHR coalescing (default 1)", "1");
++  option_parser_register(opp, "-gpgpu_hbf_ftl_enabled", OPT_BOOL,
++                         &hbf_ftl_enabled,
++                         "Enable FTL (default 1)", "1");
++  option_parser_register(opp, "-gpgpu_hbf_overprovisioning", OPT_FLOAT,
++                         &hbf_overprovisioning,
++                         "Over-provisioning ratio (default 0.15)", "0.15");
++
    m_address_mapping.addrdec_setoption(opp);
  }
  
-@@ -2011,6 +2032,11 @@ void gpgpu_sim::cycle() {
+@@ -2011,6 +2068,11 @@ void gpgpu_sim::cycle() {
        else
          m_memory_partition_unit[i]
              ->dram_cycle();  // Issue the dram command (scheduler + delay model)

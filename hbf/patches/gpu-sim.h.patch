@@ -1,19 +1,32 @@
 diff --git a/src/gpgpu-sim/gpu-sim.h b/src/gpgpu-sim/gpu-sim.h
-index 98e52f4d..468c3360 100644
+index 98e52f4d..8a413fd7 100644
 --- a/src/gpgpu-sim/gpu-sim.h
 +++ b/src/gpgpu-sim/gpu-sim.h
-@@ -401,6 +401,22 @@ class memory_config {
+@@ -401,6 +401,35 @@ class memory_config {
    bool m_perf_sim_memcpy;
    bool simple_dram_model;
    bool SST_mode;
 +
-+  // HBF (High Bandwidth Flash) configuration - Phase 1
++  // HBF (High Bandwidth Flash) configuration
 +  bool hbf_enabled;
++  bool hbf_use_phase2;               // use Phase 2 cycle-accurate controller
 +  bool hbf_route_all;                // test mode: route ALL L2 misses to HBF
 +  unsigned long long hbf_base_addr;
 +  unsigned long long hbf_size;         // bytes
-+  unsigned hbf_latency;               // fixed latency in GPU cycles
++  unsigned hbf_latency;               // Phase 1: fixed latency; Phase 2: unused
 +  unsigned hbf_max_outstanding;       // max outstanding requests in HBF queue
++
++  // Phase 2: NAND sub-array parameters
++  unsigned hbf_num_subarrays;        // total sub-arrays (default 16384)
++  unsigned hbf_page_size;            // NAND page size in bytes (default 4096)
++  unsigned hbf_pages_per_block;      // pages per erase block (default 64)
++  unsigned hbf_max_active;           // max concurrent sub-array ops (default 64)
++  unsigned hbf_tR;                   // page read latency in cycles (default 15000)
++  unsigned hbf_tPROG;                // page program latency (default 200000)
++  unsigned hbf_tBERS;                // block erase latency (default 2000000)
++  bool hbf_mshr_enabled;             // enable MSHR coalescing (default 1)
++  bool hbf_ftl_enabled;              // enable FTL (default 1)
++  float hbf_overprovisioning;        // over-provisioning ratio (default 0.15)
 +
 +  // Check if an address falls in the HBF range
 +  bool is_hbf_addr(new_addr_type addr) const {

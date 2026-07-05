@@ -1,16 +1,17 @@
 diff --git a/src/gpgpu-sim/l2cache.h b/src/gpgpu-sim/l2cache.h
-index 65c9c38b..6d56cde3 100644
+index 65c9c38b..e56e9842 100644
 --- a/src/gpgpu-sim/l2cache.h
 +++ b/src/gpgpu-sim/l2cache.h
-@@ -34,6 +34,7 @@
+@@ -34,6 +34,8 @@
  
  #include "../abstract_hardware_model.h"
  #include "dram.h"
 +#include "hbf.h"
++#include "hbf_controller.h"
  
  #include <list>
  #include <queue>
-@@ -82,11 +83,15 @@ class memory_partition_unit {
+@@ -82,11 +84,15 @@ class memory_partition_unit {
    void cache_cycle(unsigned cycle);
    void dram_cycle();
    void simple_dram_model_cycle();
@@ -27,11 +28,11 @@ index 65c9c38b..6d56cde3 100644
    void visualize() const { m_dram->visualize(); }
    void print(FILE *fp) const;
    void handle_memcpy_to_gpu(size_t dst_start_addr, unsigned subpart_id,
-@@ -116,6 +121,7 @@ class memory_partition_unit {
+@@ -116,6 +122,7 @@ class memory_partition_unit {
    class memory_stats_t *m_stats;
    class memory_sub_partition **m_sub_partition;
    class dram_t *m_dram;
-+  class hbf_ctrl_t *m_hbf;
++  class hbf_controller_t *m_hbf;
  
    class arbitration_metadata {
     public:
