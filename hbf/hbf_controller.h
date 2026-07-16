@@ -7,6 +7,7 @@
 //   - MSHR coalescing: multiple 64B cache-line requests → single NAND page read
 //   - Power-limited parallelism: max_active subarrays simultaneously
 //   - Page-level access: address translated to (subarray, block, page, offset)
+//   - v0.4: Shared page cache (LRU) for subarray-read bypass
 //
 // The controller follows the same interface as dram_t: push(), cycle(),
 // return_queue_pop(), return_queue_top(), full().
@@ -20,6 +21,7 @@
 #include "../abstract_hardware_model.h"
 #include "delayqueue.h"
 #include "hbf_subarray.h"
+#include "hbf_page_cache.h"
 
 class mem_fetch;
 class memory_config;
@@ -79,6 +81,7 @@ class hbf_controller_t {
     mshr_op_t op_state;              // current operation: WAITING/ERASING/PROGRAMMING/READING
     bool needs_erase;                // true if block must be erased before programming
     unsigned long long issue_cycle;   // when operation was issued to sub-array
+    unsigned long long cache_hit_ready_cycle;  // 0 = no cache hit; >0 = ready at this cycle
     std::vector<mem_fetch *> pending; // requests waiting for this page
   };
   std::map<unsigned long long, mshr_entry_t> m_mshr;
@@ -89,6 +92,9 @@ class hbf_controller_t {
 
   // Simple FTL (page-level mapping)
   hbf_ftl_t *m_ftl;
+
+  // v0.4: Shared page cache (LRU, logic-die SRAM)
+  hbf_page_cache_t *m_page_cache;
 
   // Write buffer: coalesce writes to same page before creating MSHR entry.
   // Hides tPROG latency by batching writes to the same page.
@@ -115,6 +121,9 @@ class hbf_controller_t {
   unsigned long long n_cycles_active;
   unsigned long long n_bytes_read;
   unsigned long long n_bytes_written;
+  unsigned long long n_gc_stall_cycles;  // accumulated cycles lost to GC
+  unsigned long long n_cache_hits;       // page cache hits
+  unsigned long long n_cache_misses;     // page cache misses
 };
 
 #endif  // HBF_CONTROLLER_H

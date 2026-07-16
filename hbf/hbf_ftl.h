@@ -14,6 +14,7 @@
 
 #include <map>
 #include <set>
+#include <vector>
 #include <stdio.h>
 
 class memory_config;
@@ -41,11 +42,17 @@ class hbf_ftl_t {
   // Mark a logical page as no longer valid (data overwritten)
   void invalidate(unsigned long long logical_page);
 
-  // Garbage Collection: pick victim block, copy valid pages, erase
+  // Garbage Collection: pick victim block, remap valid pages, erase
   void gc();
 
   // Check if GC is needed
   bool needs_gc() const;
+
+  // Per-cycle: drive GC state machine (called from controller)
+  void cycle();
+
+  // Whether GC is currently active (victim subarray is occupied)
+  bool is_in_gc() const { return m_gc_active; }
 
   // Block erase state tracking (for erase-before-write)
   bool is_block_erased(unsigned subarray, unsigned block) const;
@@ -61,7 +68,7 @@ class hbf_ftl_t {
   // logical page → physical address
   std::map<unsigned long long, hbf_phys_addr_t> m_mapping;
 
-  // Reverse: physical (subarray, block) → set of logical pages in that block
+  // Physical block identifier
   struct block_key_t {
     unsigned subarray;
     unsigned block;
@@ -70,12 +77,19 @@ class hbf_ftl_t {
              (subarray == o.subarray && block < o.block);
     }
   };
+
+  // Reverse index: physical (subarray, block) → set of logical pages
+  // Maintained in translate() and invalidate(); used by gc() to find
+  // valid pages that need remapping in the victim block.
+  std::map<block_key_t, std::set<unsigned long long>> m_reverse_map;
+
   struct block_info_t {
     unsigned total_pages;
     unsigned valid_pages;
     unsigned free_pages;
     unsigned next_free_page;  // next page to allocate in this block
     bool erased;
+    unsigned long long erase_count;  // physical erase cycles (for wear leveling)
   };
   std::map<block_key_t, block_info_t> m_blocks;
 
@@ -89,6 +103,14 @@ class hbf_ftl_t {
   // Find or allocate a block for a new write
   block_key_t allocate_block(unsigned preferred_subarray);
 
+  // Allocate a single page for GC relocation (no recursive GC trigger)
+  hbf_phys_addr_t allocate_page_for_gc(unsigned long long logical_page);
+
+  // GC state machine
+  bool m_gc_active;                       // true during GC copy phase
+  unsigned long long m_gc_cycles_remaining; // remaining GC latency cycles
+  unsigned m_gc_victim_subarray;          // subarray occupied by GC
+
   // Next block ID counter
   unsigned m_next_block_id;
 
@@ -98,6 +120,9 @@ class hbf_ftl_t {
   unsigned long long n_gcs;
   unsigned long long n_gc_page_copies;
   unsigned long long n_gc_block_erases;
+  unsigned long long n_gc_stall_cycles;   // accumulated GC latency cycles
+  unsigned long long n_wl_biased_allocs;  // times wear leveling affected allocation
+  unsigned long long n_wl_biased_gcs;     // times wear leveling affected GC victim
 };
 
 #endif  // HBF_FTL_H

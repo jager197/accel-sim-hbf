@@ -7,6 +7,10 @@
 //
 // Unlike DRAM banks which have open-row states and complex timing constraints,
 // NAND sub-arrays are simpler: one operation at a time, one timing counter.
+//
+// v0.3: Models the NAND page register — a per-subarray 1-page buffer that
+// holds the most recently accessed page. Re-reading the same page hits the
+// buffer (hbf_buffer_hit_latency cycles) instead of paying full tR.
 
 #ifndef HBF_SUBARRAY_H
 #define HBF_SUBARRAY_H
@@ -47,6 +51,10 @@ class hbf_subarray_t {
   unsigned long long n_erases;
   unsigned pe_cycles;  // program/erase cycle count (wear tracking)
 
+  // Page buffer statistics
+  unsigned long long n_buffer_hits;
+  unsigned long long n_buffer_misses;
+
  private:
   unsigned m_id;
   const memory_config *m_config;
@@ -62,6 +70,13 @@ class hbf_subarray_t {
   unsigned m_tR;      // page read latency
   unsigned m_tPROG;   // page program latency
   unsigned m_tBERS;   // block erase latency
+  unsigned m_tBUFF;   // page buffer hit latency
+
+  // Page buffer (NAND page register): holds the most recently accessed page.
+  // A re-read of the same page on the same subarray need not pay full tR.
+  bool m_buffer_valid;
+  unsigned m_buffer_page;
+  unsigned m_buffer_block;
 };
 
 #endif  // HBF_SUBARRAY_H

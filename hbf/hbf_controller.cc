@@ -51,6 +51,9 @@ hbf_controller_t::hbf_controller_t(unsigned partition_id,
   // Write buffer: max entries before forced flush (default 32)
   m_write_buffer_max = 32;
 
+  // v0.4: Shared page cache (0 entries = disabled)
+  m_page_cache = new hbf_page_cache_t(m_config->hbf_cache_entries);
+
   // Statistics
   n_page_reads       = 0;
   n_page_programs    = 0;
@@ -63,6 +66,9 @@ hbf_controller_t::hbf_controller_t(unsigned partition_id,
   n_cycles_active    = 0;
   n_bytes_read       = 0;
   n_bytes_written    = 0;
+  n_gc_stall_cycles  = 0;
+  n_cache_hits       = 0;
+  n_cache_misses     = 0;
 }
 
 hbf_controller_t::~hbf_controller_t() {
@@ -72,6 +78,7 @@ hbf_controller_t::~hbf_controller_t() {
   delete[] m_subarrays;
   delete m_returnq;
   if (m_ftl) delete m_ftl;
+  delete m_page_cache;
 }
 
 // ============================================================================
@@ -152,6 +159,7 @@ void hbf_controller_t::push(mem_fetch *data) {
   entry.phys_page   = page_addr;
   entry.op_state    = OP_WAITING;
   entry.needs_erase = false;
+  entry.cache_hit_ready_cycle = 0;
   entry.pending.push_back(data);
 
   if (m_ftl) {
@@ -194,6 +202,7 @@ void hbf_controller_t::flush_write_buffer_entry(unsigned long long page_addr) {
   entry.phys_page   = page_addr;
   entry.op_state    = OP_WAITING;
   entry.needs_erase = false;
+  entry.cache_hit_ready_cycle = 0;
   entry.pending     = std::move(wb.requests);
 
   if (m_ftl) {
@@ -269,7 +278,10 @@ void hbf_controller_t::cycle() {
       // Don't erase from queue — it will be picked up for programming next cycle
     } else {
       // Read or program completed → return data to requesters
-      unsigned long long op_cycle = 0;
+      // v0.4: Fill page cache on read completion
+      if (c.prev_state == hbf_subarray_t::READING && m_page_cache->enabled()) {
+        m_page_cache->insert(it->second.phys_page);
+      }
       for (mem_fetch *mf : it->second.pending) {
         if (mf->get_access_type() != L1_WRBK_ACC &&
             mf->get_access_type() != L2_WRBK_ACC) {
@@ -287,7 +299,38 @@ void hbf_controller_t::cycle() {
     }
   }
 
-  // Step 3: Flush write buffer entries that have been waiting too long
+  // Step 2b: Process cache hit completions
+  // Entries that hit in the page cache complete after cache_hit_latency cycles
+  // without ever touching a subarray.
+  std::vector<unsigned long long> cache_done;
+  for (auto &kv : m_mshr) {
+    if (kv.second.cache_hit_ready_cycle > 0 &&
+        current_cycle >= kv.second.cache_hit_ready_cycle) {
+      cache_done.push_back(kv.first);
+    }
+  }
+  for (auto key : cache_done) {
+    auto it = m_mshr.find(key);
+    if (it == m_mshr.end()) continue;
+    for (mem_fetch *mf : it->second.pending) {
+      if (mf->get_access_type() != L1_WRBK_ACC &&
+          mf->get_access_type() != L2_WRBK_ACC) {
+        mf->set_reply();
+      }
+      if (!m_returnq->full()) m_returnq->push(mf);
+      unsigned long long latency = current_cycle - it->second.issue_cycle;
+      total_read_latency += latency;
+      n_bytes_read += mf->get_data_size();
+    }
+    m_mshr.erase(it);
+  }
+
+  // Step 3a: FTL housekeeping (GC state machine)
+  if (m_ftl) {
+    m_ftl->cycle();
+  }
+
+  // Step 3b: Flush write buffer entries that have been waiting too long
   static const unsigned WRITE_BUFFER_TIMEOUT = 1000;
   auto wb_it = m_write_buffer.begin();
   while (wb_it != m_write_buffer.end()) {
@@ -339,6 +382,10 @@ void hbf_controller_t::schedule_operations() {
 
     if (first_mf->get_is_write()) {
       // ═══ Write path: erase-before-write ═══
+      // v0.4: Invalidate page cache (old data is stale)
+      if (m_page_cache->enabled()) {
+        m_page_cache->invalidate(mshr_it->second.phys_page);
+      }
       if (mshr_it->second.needs_erase) {
         // Block not erased → issue ERASE first
         if (m_ftl) m_ftl->mark_block_erasing(sa_id, mshr_it->second.block_id);
@@ -355,11 +402,23 @@ void hbf_controller_t::schedule_operations() {
         n_page_programs++;
       }
     } else {
-      // Read
-      sa->start_read(mshr_it->second.page_offset, mshr_it->second.block_id);
-      mshr_it->second.op_state = OP_READING;
-      mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-      n_page_reads++;
+      // ═══ Read path: page cache lookup ═══
+      if (m_page_cache->lookup(mshr_it->second.phys_page)) {
+        // Cache hit — fast completion, no subarray needed
+        mshr_it->second.cache_hit_ready_cycle =
+            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
+            m_config->hbf_cache_hit_latency;
+        mshr_it->second.op_state = OP_WAITING;
+        mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        n_cache_hits++;
+      } else {
+        // Cache miss — normal subarray read
+        sa->start_read(mshr_it->second.page_offset, mshr_it->second.block_id);
+        mshr_it->second.op_state = OP_READING;
+        mshr_it->second.issue_cycle = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+        n_page_reads++;
+        n_cache_misses++;
+      }
     }
 
     it = m_mshr_queue.erase(it);
@@ -415,11 +474,33 @@ void hbf_controller_t::print_stat(FILE *simFile) {
 
   // Per-subarray summary
   unsigned idle_count = 0;
+  unsigned long long total_buffer_hits = 0, total_buffer_misses = 0;
   for (unsigned i = 0; i < m_num_subarrays; i++) {
     if (m_subarrays[i]->is_idle()) idle_count++;
+    total_buffer_hits += m_subarrays[i]->n_buffer_hits;
+    total_buffer_misses += m_subarrays[i]->n_buffer_misses;
   }
   fprintf(simFile, "HBF Active Sub-arrays:  %u / %u\n",
           m_num_subarrays - idle_count, m_num_subarrays);
+  unsigned long long total_buffer_accesses = total_buffer_hits + total_buffer_misses;
+  if (total_buffer_accesses > 0) {
+    fprintf(simFile, "HBF Page Buffer Hits:   %llu (%.1f%%)\n",
+            total_buffer_hits,
+            100.0 * total_buffer_hits / total_buffer_accesses);
+  }
+
+  // v0.4: Page cache statistics
+  fprintf(simFile, "HBF Page Cache:         %s (%u entries, hits=%llu misses=%llu)\n",
+          m_page_cache->enabled() ? "enabled" : "disabled",
+          m_page_cache->size(),
+          m_page_cache->hits,
+          m_page_cache->misses);
+  if (m_page_cache->hits + m_page_cache->misses > 0) {
+    fprintf(simFile, "HBF Page Cache Hit Rate: %.1f%%  Evictions: %llu\n",
+            100.0 * m_page_cache->hits /
+                (m_page_cache->hits + m_page_cache->misses),
+            m_page_cache->evictions);
+  }
 
   fprintf(simFile, "==========================================================\n\n");
 }

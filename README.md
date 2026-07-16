@@ -12,7 +12,19 @@ My research involves HBF-integrated GPU architectures. Since there's no publicly
 
 ## Versions
 
-### v0.2 (current) — Cycle-Accurate NAND Controller
+### v0.3 (current) — FTL GC: Page Remapping + Latency Model + Wear Leveling + Page Cache
+
+Fixes the correctness gap in v0.2's GC, adds cycle-accurate latency modeling, wear leveling, and a shared page cache:
+
+- **Page remapping in GC** — victim block's valid logical pages are now properly relocated to new physical pages during garbage collection, fixing stale-mapping reads after GC. A reverse index `(subarray, block) → logical pages` is maintained in `translate()`/`invalidate()` to enable O(1) lookup of valid pages in the victim.
+- **GC latency modeling** — each relocated page costs `tPROG` cycles on the target sub-array. The FTL now has a `cycle()`-driven GC state machine that tracks active GC stall cycles. Victim block erase latency (`tBERS`) is already covered by the existing erase-before-write path when the recycled block is first reused.
+- **Wear leveling** (`-gpgpu_hbf_wear_leveling_enabled 1`) — per-block erase count tracking. When enabled, block allocation picks the least-erased block from the free pool, and GC victim selection uses a cost function that penalises above-average erase counts to spread wear across blocks. Statistics include min/avg/max erase count and wear-biased decision counters.
+- **Shared page cache** (`-gpgpu_hbf_cache_entries 256`) — LRU cache of recently-read pages on the logic die, between MSHR and sub-array scheduling. Read hits return in `hbf_cache_hit_latency` (~50 cycles) instead of full tR (15,000 cycles). Write-invalidate policy.
+- **Per-subarray page buffer** — models the NAND page register (1 page per subarray). Re-reading the same page hits the register for `hbf_buffer_hit_latency` cycles instead of full tR.
+- **New stats** — `GC Stall Cycles`, `Avg GC Latency`, `Erase Count` min/avg/max, wear leveling counters, `Page Buffer Hits`, `Page Cache` hit rate.
+- **New files** — `hbf_page_cache.h/cc`, plus new methods in `hbf_ftl_t` and `hbf_subarray_t`.
+
+### v0.2 — Cycle-Accurate NAND Controller
 
 Built on v0.1, replaces the fixed-latency FIFO with a real flash controller:
 
@@ -71,3 +83,4 @@ A ready-to-use HBF config is at `hbf/gpgpusim_hbf.config`. Key Phase 2 options:
 - [GPGPU-Sim](https://github.com/gpgpu-sim/gpgpu-sim_distribution) — the timing model core used by Accel-Sim
 - [MQSim](https://github.com/CMU-SAFARI/MQSim) — SSD simulator (FAST 2018), NAND timing parameters are referenced from here
 - [CXL-MQSim](https://github.com/sang-jun-kim/CXL-MQSim) — CXL flash expander simulator, closest in concept to what we're building
+- [H3](https://doi.org/10.1109/lca.2026.3660969) — Hybrid Architecture Using HBM and HBF for Cost-Efficient LLM Inference (SK hynix, IEEE CAL 2026)
