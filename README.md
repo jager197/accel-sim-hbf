@@ -10,39 +10,6 @@ HBF is still in early stages — first chip samples are expected in 2H 2026, wit
 
 My research involves HBF-integrated GPU architectures. Since there's no publicly available simulation platform, I decided to build one myself.
 
-## Versions
-
-### v0.3 (current) — FTL GC: Page Remapping + Latency Model + Wear Leveling + Page Cache
-
-Fixes the correctness gap in v0.2's GC, adds cycle-accurate latency modeling, wear leveling, and a shared page cache:
-
-- **Page remapping in GC** — victim block's valid logical pages are now properly relocated to new physical pages during garbage collection, fixing stale-mapping reads after GC. A reverse index `(subarray, block) → logical pages` is maintained in `translate()`/`invalidate()` to enable O(1) lookup of valid pages in the victim.
-- **GC latency modeling** — each relocated page costs `tPROG` cycles on the target sub-array. The FTL now has a `cycle()`-driven GC state machine that tracks active GC stall cycles. Victim block erase latency (`tBERS`) is already covered by the existing erase-before-write path when the recycled block is first reused.
-- **Wear leveling** (`-gpgpu_hbf_wear_leveling_enabled 1`) — per-block erase count tracking. When enabled, block allocation picks the least-erased block from the free pool, and GC victim selection uses a cost function that penalises above-average erase counts to spread wear across blocks. Statistics include min/avg/max erase count and wear-biased decision counters.
-- **Shared page cache** (`-gpgpu_hbf_cache_entries 256`) — LRU cache of recently-read pages on the logic die, between MSHR and sub-array scheduling. Read hits return in `hbf_cache_hit_latency` (~50 cycles) instead of full tR (15,000 cycles). Write-invalidate policy.
-- **Per-subarray page buffer** — models the NAND page register (1 page per subarray). Re-reading the same page hits the register for `hbf_buffer_hit_latency` cycles instead of full tR.
-- **New stats** — `GC Stall Cycles`, `Avg GC Latency`, `Erase Count` min/avg/max, wear leveling counters, `Page Buffer Hits`, `Page Cache` hit rate.
-- **New files** — `hbf_page_cache.h/cc`, plus new methods in `hbf_ftl_t` and `hbf_subarray_t`.
-
-### v0.2 — Cycle-Accurate NAND Controller
-
-Built on v0.1, replaces the fixed-latency FIFO with a real flash controller:
-
-- **NAND sub-array state machines** — IDLE → READING → PROGRAMMING → ERASING, each with configurable per-operation latency (tR / tPROG / tBERS). Follows the `bank_t` pattern from GPGPU-Sim's DRAM model.
-- **MSHR coalescing** — multiple 64B cache-line requests to the same 4KB NAND page are merged into a single page read. Verified: 75% coalescing rate on a rodinia trace (16 requests → 4 page reads).
-- **Power-limited parallelism** — configurable max simultaneous sub-array operations (`hbf_max_active`).
-- **Page-level FTL** — simple direct-mapped logical→physical translation with GREEDY garbage collection.
-- **10 new config options** — `hbf_use_phase2`, `hbf_num_subarrays`, `hbf_max_active`, `hbf_tR`, `hbf_tPROG`, `hbf_tBERS`, `hbf_page_size`, `hbf_pages_per_block`, `hbf_mshr_enabled`, `hbf_ftl_enabled`.
-
-### v0.1 — Fixed-Latency HBF
-
-Basic memory tier alongside DRAM:
-
-- Address-range partitioning via `is_hbf_addr()` in `memory_config`
-- Fixed-latency FIFO (`hbf_ctrl_t`), configured by `hbf_latency`
-- `hbf_route_all` test mode for forcing all L2 misses through HBF
-- Read/write/latency/queue depth statistics per partition
-
 ## How to Run
 
 Prerequisites: Ubuntu 20.04+, CUDA 11–12, an NVIDIA GPU.
