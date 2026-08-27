@@ -39,3 +39,6 @@ runs/
 workloads_bin/
 experiments/logs/
 *.log
+docs/
+# local docs (not synced)
+docs/
