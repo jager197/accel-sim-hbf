@@ -339,7 +339,7 @@ export CUDA_INSTALL_PATH=/usr/local/cuda
 source ./gpu-simulator/setup_environment.sh
 bash setup_hbf.sh
 make -j$(nproc) -C ./gpu-simulator
-bash run_smoke_test.sh
+bash experiments/run_all.sh
 ```
 
 ## 参考文献

@@ -30,6 +30,24 @@ struct hbf_phys_addr_t {
       : subarray(sa), block(blk), page(pg) {}
 };
 
+// Capacity usage summary, computed by hbf_ftl_t::get_usage().
+// Lets the simulator report "what fraction of HBF is occupied" — useful for
+// sizing weight / KV-cache regions in a paper workload.
+struct hbf_usage_info_t {
+  unsigned long long total_pages;   // physical pages across all allocated blocks
+  unsigned long long valid_pages;   // pages currently holding live data
+  unsigned long long free_pages;    // free pages within allocated blocks
+  unsigned long long total_blocks;  // blocks ever created (allocated)
+  unsigned long long free_blocks;   // erased blocks waiting in the free pool
+  unsigned long long logical_pages; // live logical page mappings
+  unsigned subarrays_used;          // subarrays holding at least one valid page
+  unsigned subarrays_total;         // total subarrays in the array
+  // Utilization histogram over subarrays (fraction of pages occupied):
+  // bucket 0: 0%, bucket 1: (0,25%], bucket 2: (25,50%],
+  // bucket 3: (50,75%], bucket 4: (75,100%]
+  unsigned histogram[5];
+};
+
 class hbf_ftl_t {
  public:
   hbf_ftl_t(const memory_config *config);
@@ -42,17 +60,35 @@ class hbf_ftl_t {
   // Mark a logical page as no longer valid (data overwritten)
   void invalidate(unsigned long long logical_page);
 
+  // Media management mode (v0.4, OCP §11.4):
+  //   mode 0 (hbf): NO garbage collection, NO device-side valid-data
+  //     movement. A block whose valid pages all become invalid returns to
+  //     the free pool immediately (it is erased on reuse). Wear leveling
+  //     exists only as host-controlled zone remapping (accounted here).
+  //   mode 1 (ssd): classic GREEDY GC with page relocation (comparison
+  //     baseline for quantifying how SSD-derived models mispredict HBF).
+  unsigned media_mode() const { return m_media_mode; }
   // Garbage Collection: pick victim block, remap valid pages, erase
+  // (SSD mode only; no-op in HBF mode).
   void gc();
 
-  // Check if GC is needed
+  // Check if GC is needed (always false in HBF mode)
   bool needs_gc() const;
 
   // Per-cycle: drive GC state machine (called from controller)
   void cycle();
 
+  // Host-controlled zone remapping accounting (HBF mode, OCP §11.4.1):
+  // when the PEC spread across zones exceeds the configured threshold, a
+  // remap event is counted (hot zone swapped with cold zone; no device-side
+  // data movement — the model has no per-zone data to move).
+  void maybe_zone_remap();
+
   // Whether GC is currently active (victim subarray is occupied)
   bool is_in_gc() const { return m_gc_active; }
+
+  // Compute capacity usage summary (blocks, pages, subarray spread)
+  hbf_usage_info_t get_usage() const;
 
   // Block erase state tracking (for erase-before-write)
   bool is_block_erased(unsigned subarray, unsigned block) const;
@@ -113,6 +149,25 @@ class hbf_ftl_t {
 
   // Next block ID counter
   unsigned m_next_block_id;
+
+  // ── Capacity enforcement (v0.4) ──────────────────────────────────────
+  // The modeled device is NOT infinite. Per partition the FTL may create at
+  // most m_max_blocks physical blocks, derived from the configured HBF
+  // capacity:  max_blocks = (hbf_size / n_mem_partitions) / (pages_per_block
+  // * page_size). When capacity is exhausted, allocation falls back to
+  // recycling the block with the fewest valid pages and increments
+  // n_capacity_exceeded (loudly visible in stats; data in recycled blocks is
+  // discarded — this path is unreachable for the current workloads, whose
+  // working sets are orders of magnitude below 512 GiB).
+  unsigned long long m_max_blocks;
+  unsigned long long n_capacity_exceeded;
+
+  // ── Media management mode (v0.4) ─────────────────────────────────────
+  int m_media_mode;                  // 0 = hbf (no GC), 1 = ssd (GC baseline)
+  unsigned m_blocks_per_zone;        // blocks per zone
+  bool m_zone_remap_enabled;
+  unsigned m_zone_remap_threshold;
+  unsigned long long n_zone_remaps;  // counted zone-remap events
 
   // Statistics
   unsigned long long n_translations;

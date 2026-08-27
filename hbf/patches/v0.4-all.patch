@@ -1,0 +1,429 @@
+diff --git a/libcuda/cuda_runtime_api.cc b/libcuda/cuda_runtime_api.cc
+index 5317c86e..a6b0f15f 100644
+--- a/libcuda/cuda_runtime_api.cc
++++ b/libcuda/cuda_runtime_api.cc
+@@ -464,10 +464,28 @@ char *get_app_binary_name(std::string abs_path) {
+   return self_exe_path;
+ }
+ 
++// Dedicated scratch directory for simulator temp files, so mkstemp
++// artifacts (e.g. _app_cuda_version_*, _cuobjdump_list_ptx_*) never
++// litter the working directory. Honors $HBF_TMPDIR, defaults to
++// ./.hbf_tmp (created on first use).
++static const char *hbf_scratch_dir() {
++  static const char *dir = NULL;
++  if (dir == NULL) {
++    const char *env = getenv("HBF_TMPDIR");
++    dir = (env && env[0]) ? env : ".hbf_tmp";
++    char cmd[512];
++    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", dir);
++    if (system(cmd) != 0) {
++      fprintf(stderr, "WARNING: cannot create HBF scratch dir %s\n", dir);
++    }
++  }
++  return dir;
++}
++
+ static int get_app_cuda_version_internal(std::string app_binary) {
+   int app_cuda_version = 0;
+   char fname[1024];
+-  snprintf(fname, 1024, "_app_cuda_version_XXXXXX");
++  snprintf(fname, 1024, "%s/_app_cuda_version_XXXXXX", hbf_scratch_dir());
+   int fd = mkstemp(fname);
+   close(fd);
+   // Weili: Add way to extract CUDA version information from Balar Vanadis
+@@ -3260,7 +3278,8 @@ void cuda_runtime_api::extract_ptx_files_using_cuobjdump_internal(
+   char *pytorch_bin = getenv("PYTORCH_BIN");
+ 
+   char ptx_list_file_name[1024];
+-  snprintf(ptx_list_file_name, 1024, "_cuobjdump_list_ptx_XXXXXX");
++  snprintf(ptx_list_file_name, 1024, "%s/_cuobjdump_list_ptx_XXXXXX",
++           hbf_scratch_dir());
+   int fd2 = mkstemp(ptx_list_file_name);
+   close(fd2);
+ 
+@@ -3369,7 +3388,8 @@ void cuda_runtime_api::extract_code_using_cuobjdump_internal(
+   // dump only for specific arch
+   char fname[1024];
+   if ((override_cuobjdump == NULL) || (strlen(override_cuobjdump) == 0)) {
+-    snprintf(fname, 1024, "_cuobjdump_complete_output_XXXXXX");
++    snprintf(fname, 1024, "%s/_cuobjdump_complete_output_XXXXXX",
++             hbf_scratch_dir());
+     int fd = mkstemp(fname);
+     close(fd);
+     if (!gpgpu_ctx->device_runtime->g_cdp_enabled)
+diff --git a/src/cuda-sim/instructions.cc b/src/cuda-sim/instructions.cc
+index 8bc19d31..2adbd92a 100644
+--- a/src/cuda-sim/instructions.cc
++++ b/src/cuda-sim/instructions.cc
+@@ -3382,7 +3382,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
+   unsigned vector_spec = pI->get_vector();
+ 
+   memory_space *mem = NULL;
+-  addr_t addr = src1_data.u32;
++  addr_t addr = src1_data.u64;  // full 64-bit address (was u32 — truncated
++                                // HBF/global addresses above 4GB)
+ 
+   decode_space(space, thread, src1, mem, addr);
+ 
+@@ -3455,7 +3456,7 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+     memory_space_t space = pI->get_space();
+ 
+     memory_space *mem = NULL;
+-    addr_t addr = addr_reg.u32;
++    addr_t addr = addr_reg.u64;  // full 64-bit address
+ 
+     new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
+     int num_mem_txn = 0;
+@@ -3575,7 +3576,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
+     memory_space_t space = pI->get_space();
+ 
+     memory_space *mem = NULL;
+-    addr_t addr = src1_data.u32;
++    addr_t addr = src1_data.u64;  // full 64-bit address
+     smid = thread->get_hw_sid();
+     if (whichspace(addr) == shared_space) {
+       addr = generic_to_shared(smid, addr);
+@@ -5751,7 +5752,7 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+     // squeeze the zeros out of the array and store data back into original
+     // array
+     mem = NULL;
+-    addr = src1_data.u32;
++    addr = src1_data.u64;  // full 64-bit address
+     space.set_type(global_space);
+     decode_space(space, thread, src1, mem, addr);
+     // store nonzero entries and indices
+@@ -5798,7 +5799,7 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+   unsigned vector_spec = pI->get_vector();
+ 
+   memory_space *mem = NULL;
+-  addr_t addr = addr_reg.u32;
++  addr_t addr = addr_reg.u64;  // full 64-bit address
+ 
+   decode_space(space, thread, dst, mem, addr);
+ 
+diff --git a/src/cuda-sim/ptx_loader.cc b/src/cuda-sim/ptx_loader.cc
+index df354983..ea649d20 100644
+--- a/src/cuda-sim/ptx_loader.cc
++++ b/src/cuda-sim/ptx_loader.cc
+@@ -107,13 +107,31 @@ void gpgpu_context::print_ptx_file(const char *p, unsigned source_num,
+   fflush(stdout);
+ }
+ 
++// Dedicated scratch directory for simulator temp files, so mkstemp
++// artifacts (e.g. _ptx_*, _ptxplus_*, _ptx_errors_*) never litter the
++// working directory. Honors $HBF_TMPDIR, defaults to ./.hbf_tmp
++// (created on first use).
++static const char *hbf_scratch_dir() {
++  static const char *dir = NULL;
++  if (dir == NULL) {
++    const char *env = getenv("HBF_TMPDIR");
++    dir = (env && env[0]) ? env : ".hbf_tmp";
++    char cmd[512];
++    snprintf(cmd, sizeof(cmd), "mkdir -p \"%s\"", dir);
++    if (system(cmd) != 0) {
++      fprintf(stderr, "WARNING: cannot create HBF scratch dir %s\n", dir);
++    }
++  }
++  return dir;
++}
++
+ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
+     const std::string ptxfilename, const std::string elffilename,
+     const std::string sassfilename) {
+   printf("GPGPU-Sim PTX: converting EMBEDDED .ptx file to ptxplus \n");
+ 
+   char fname_ptxplus[1024];
+-  snprintf(fname_ptxplus, 1024, "_ptxplus_XXXXXX");
++  snprintf(fname_ptxplus, 1024, "%s/_ptxplus_XXXXXX", hbf_scratch_dir());
+   int fd4 = mkstemp(fname_ptxplus);
+   close(fd4);
+ 
+@@ -181,7 +199,7 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
+   int errors = ptx_parse(ptx_parser->scanner, ptx_parser);
+   if (errors) {
+     char fname[1024];
+-    snprintf(fname, 1024, "_ptx_errors_XXXXXX");
++    snprintf(fname, 1024, "%s/_ptx_errors_XXXXXX", hbf_scratch_dir());
+     int fd = mkstemp(fname);
+     close(fd);
+     printf(
+@@ -385,7 +403,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
+       final_tempfile_ptxinfo[1024], tempfile_ptxinfo[1024];
+   for (int index = 1; index <= no_of_ptx; index++) {
+     snprintf(ptx_file, 1000, "%s.%d.sm_%u.ptx", name, index, sm_version);
+-    snprintf(fname, 1024, "_ptx_XXXXXX");
++    snprintf(fname, 1024, "%s/_ptx_XXXXXX", hbf_scratch_dir());
+     int fd = mkstemp(fname);
+     close(fd);
+ 
+@@ -397,7 +415,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
+       exit(0);
+     }
+ 
+-    snprintf(fname2, 1024, "_ptx2_XXXXXX");
++    snprintf(fname2, 1024, "%s/_ptx2_XXXXXX", hbf_scratch_dir());
+     fd = mkstemp(fname2);
+     close(fd);
+     char commandline2[4096];
+@@ -478,7 +496,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
+   // TODO: duplicate code! move it into a function so that it can be reused!
+   if (no_of_ptx == 0) {
+     // For CDP, we dump everything. So no_of_ptx will be 0.
+-    snprintf(fname, 1024, "_ptx_XXXXXX");
++    snprintf(fname, 1024, "%s/_ptx_XXXXXX", hbf_scratch_dir());
+     int fd = mkstemp(fname);
+     close(fd);
+ 
+@@ -488,7 +506,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
+     fprintf(ptxfile, "%s", p_for_info);
+     fclose(ptxfile);
+ 
+-    snprintf(fname2, 1024, "_ptx2_XXXXXX");
++    snprintf(fname2, 1024, "%s/_ptx2_XXXXXX", hbf_scratch_dir());
+     fd = mkstemp(fname2);
+     close(fd);
+     char commandline2[4096];
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index e8ce53c9..cadd876e 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -361,14 +361,14 @@ void memory_config::reg_options(class OptionParser *opp) {
+                          "Max concurrent sub-array operations (default 64)",
+                          "64");
+   option_parser_register(opp, "-gpgpu_hbf_tR", OPT_UINT32, &hbf_tR,
+-                         "NAND page read latency in cycles (default 15000)",
+-                         "15000");
++                         "NAND page read latency in DRAM-clock ticks (15us @ 850MHz = 12750; default 12750)",
++                         "12750");
+   option_parser_register(opp, "-gpgpu_hbf_tPROG", OPT_UINT32, &hbf_tPROG,
+-                         "NAND page program latency in cycles (default 200000)",
+-                         "200000");
++                         "NAND page program latency in DRAM-clock ticks (200us = 170000; default 170000)",
++                         "170000");
+   option_parser_register(opp, "-gpgpu_hbf_tBERS", OPT_UINT32, &hbf_tBERS,
+-                         "NAND block erase latency in cycles (default 2000000)",
+-                         "2000000");
++                         "NAND block erase latency in DRAM-clock ticks (2ms = 1700000; default 1700000)",
++                         "1700000");
+   option_parser_register(opp, "-gpgpu_hbf_mshr_enabled", OPT_BOOL,
+                          &hbf_mshr_enabled,
+                          "Enable MSHR coalescing (default 1)", "1");
+@@ -381,6 +381,9 @@ void memory_config::reg_options(class OptionParser *opp) {
+   option_parser_register(opp, "-gpgpu_hbf_wear_leveling_enabled", OPT_BOOL,
+                          &hbf_wear_leveling_enabled,
+                          "Enable wear leveling (default 0)", "0");
++  option_parser_register(opp, "-gpgpu_hbf_buffer_enabled", OPT_BOOL,
++                         &hbf_buffer_enabled,
++                         "Enable per-subarray page buffer (default 1)", "1");
+   option_parser_register(opp, "-gpgpu_hbf_buffer_hit_latency", OPT_UINT32,
+                          &hbf_buffer_hit_latency,
+                          "Page buffer hit latency in cycles (default 10)", "10");
+@@ -389,7 +392,70 @@ void memory_config::reg_options(class OptionParser *opp) {
+                          "Page cache entries (0=disabled, default 256)", "256");
+   option_parser_register(opp, "-gpgpu_hbf_cache_hit_latency", OPT_UINT32,
+                          &hbf_cache_hit_latency,
+-                         "Page cache hit latency in cycles (default 50)", "50");
++                         "Page cache hit latency in DRAM ticks (default 50)", "50");
++
++  // Phase 3 (v0.4): host-channel model
++  option_parser_register(opp, "-gpgpu_hbf_num_channels", OPT_UINT32,
++                         &hbf_num_channels,
++                         "Number of HBF host channels per stack (OCP v0.7.0 max 16; default 4)", "4");
++  option_parser_register(opp, "-gpgpu_hbf_channel_map", OPT_INT32,
++                         &hbf_channel_map,
++                         "Channel address mapping: 0=interleave(4KiB round-robin), 1=partition(contiguous regions) (default 0)",
++                         "0");
++  option_parser_register(opp, "-gpgpu_hbf_channel_bw_gbps", OPT_DOUBLE,
++                         &hbf_channel_bw_gbps,
++                         "Per-channel effective interface bandwidth GB/s (OCP grade-3 = 3072/16 = 192; default 192)",
++                         "192");
++  option_parser_register(opp, "-gpgpu_hbf_max_outstanding_writes", OPT_UINT32,
++                         &hbf_max_outstanding_writes,
++                         "Per-channel max outstanding writes (OCP 5.4.1.7, e.g. 64/128; default 64)",
++                         "64");
++
++  // Phase 3 (v0.4): media management mode
++  option_parser_register(opp, "-gpgpu_hbf_media_mode", OPT_INT32,
++                         &hbf_media_mode,
++                         "Media management: 0=hbf (no GC, zone-based, OCP 11.4), 1=ssd (GREEDY GC, comparison baseline) (default 0)",
++                         "0");
++  option_parser_register(opp, "-gpgpu_hbf_blocks_per_zone", OPT_UINT32,
++                         &hbf_blocks_per_zone,
++                         "Blocks per zone (zone = block_id / this; default 64)",
++                         "64");
++  option_parser_register(opp, "-gpgpu_hbf_zone_remap_enabled", OPT_BOOL,
++                         &hbf_zone_remap_enabled,
++                         "Account host-controlled zone remapping for wear leveling (OCP 11.4.1; default 0)",
++                         "0");
++  option_parser_register(opp, "-gpgpu_hbf_zone_remap_threshold", OPT_UINT32,
++                         &hbf_zone_remap_threshold,
++                         "PEC spread (max-min) that triggers a zone-remap event (default 100)",
++                         "100");
++
++  // Phase 3 (v0.4): write path
++  option_parser_register(opp, "-gpgpu_hbf_write_buffer_entries", OPT_UINT32,
++                         &hbf_write_buffer_entries,
++                         "Write buffer entries before forced flush (default 32)",
++                         "32");
++  option_parser_register(opp, "-gpgpu_hbf_write_agg_timeout", OPT_UINT32,
++                         &hbf_write_agg_timeout,
++                         "4KiB write aggregation deadline in DRAM ticks (OCP 5.4.1.6; default 1000)",
++                         "1000");
++  option_parser_register(opp, "-gpgpu_hbf_page_buffers", OPT_UINT32,
++                         &hbf_page_buffers,
++                         "Page buffers per bank (OCP 5.3.1.7 requires >= 2; default 2)",
++                         "2");
++
++  // Phase 3 (v0.4): controller scheduling policy
++  option_parser_register(opp, "-gpgpu_hbf_scheduler", OPT_INT32,
++                         &hbf_scheduler,
++                         "HBF scheduler: 0=FCFS, 1=read-priority, 2=write-drain (default 0)",
++                         "0");
++  option_parser_register(opp, "-gpgpu_hbf_write_drain_high", OPT_UINT32,
++                         &hbf_write_drain_high,
++                         "Write-buffer entries that open a write-drain window (default 8)",
++                         "8");
++  option_parser_register(opp, "-gpgpu_hbf_write_drain_maxwait", OPT_UINT32,
++                         &hbf_write_drain_maxwait,
++                         "Max DRAM ticks a write window may delay reads (default 20000)",
++                         "20000");
+ 
+   m_address_mapping.addrdec_setoption(opp);
+ }
+diff --git a/src/gpgpu-sim/gpu-sim.h b/src/gpgpu-sim/gpu-sim.h
+index a4804e3f..d98de255 100644
+--- a/src/gpgpu-sim/gpu-sim.h
++++ b/src/gpgpu-sim/gpu-sim.h
+@@ -416,16 +416,53 @@ class memory_config {
+   unsigned hbf_page_size;            // NAND page size in bytes (default 4096)
+   unsigned hbf_pages_per_block;      // pages per erase block (default 64)
+   unsigned hbf_max_active;           // max concurrent sub-array ops (default 64)
+-  unsigned hbf_tR;                   // page read latency in cycles (default 15000)
+-  unsigned hbf_tPROG;                // page program latency (default 200000)
+-  unsigned hbf_tBERS;                // block erase latency (default 2000000)
++  // NAND op latencies are counted in DRAM-clock ticks: hbf_cycle() runs in
++  // the DRAM clock domain (same convention as dram_t timing options).
++  // 15us @ 850MHz = 12750 ticks, 200us = 170000, 2ms = 1700000.
++  unsigned hbf_tR;                   // page read latency (default 12750)
++  unsigned hbf_tPROG;                // page program latency (default 170000)
++  unsigned hbf_tBERS;                // block erase latency (default 1700000)
+   bool hbf_mshr_enabled;             // enable MSHR coalescing (default 1)
+   bool hbf_ftl_enabled;              // enable FTL (default 1)
+   float hbf_overprovisioning;        // over-provisioning ratio (default 0.15)
+   bool hbf_wear_leveling_enabled;    // enable wear leveling (default 0)
+-  unsigned hbf_buffer_hit_latency;   // page buffer hit latency in cycles (default 10)
++  bool hbf_buffer_enabled;           // per-subarray page buffer (default 1)
++  unsigned hbf_buffer_hit_latency;   // page buffer hit latency in DRAM ticks (default 10)
+   unsigned hbf_cache_entries;        // page cache entries (0 = disabled, default 256)
+-  unsigned hbf_cache_hit_latency;    // page cache hit latency in cycles (default 50)
++  unsigned hbf_cache_hit_latency;    // page cache hit latency in DRAM ticks (default 50)
++
++  // Phase 3 (v0.4): host-channel model (OCP HBF v0.7.0 §4.3/§4.5)
++  unsigned hbf_num_channels;         // host channels per stack (default 4, max 16)
++  // Channel address mapping: 0 = interleave (4KiB-granular round-robin across
++  // channels, OCP §11.1.1), 1 = partition (contiguous per-channel regions,
++  // OCP §13.3.3 dedicated channels per data type).
++  int hbf_channel_map;
++  double hbf_channel_bw_gbps;        // per-channel effective interface BW (GB/s; default 192 = grade-3 3.072TB/s / 16ch)
++  unsigned hbf_max_outstanding_writes;  // per-channel outstanding write limit (OCP §5.4.1.7, default 64)
++
++  // Phase 3 (v0.4): media management mode (OCP §11.4)
++  // 0 = hbf: spec-faithful — NO garbage collection, NO device-side valid-data
++  //     movement; blocks return to the free pool when fully invalidated;
++  //     wear leveling only via host zone remapping (accounted).
++  // 1 = ssd: classic SSD semantics (GREEDY GC with page relocation) — kept
++  //     as a comparison baseline to quantify how SSD-derived models
++  //     mispredict HBF behavior.
++  int hbf_media_mode;
++  unsigned hbf_blocks_per_zone;      // blocks per zone (zone = block_id / this)
++  bool hbf_zone_remap_enabled;       // account host-controlled zone remapping
++  unsigned hbf_zone_remap_threshold; // PEC spread that triggers a remap event
++
++  // Phase 3 (v0.4): write path (OCP §5.4.1)
++  unsigned hbf_write_buffer_entries; // write buffer entries before forced flush (default 32)
++  unsigned hbf_write_agg_timeout;    // 4KiB aggregation deadline in DRAM ticks (OCP 5.4.1.6; default 1000)
++  unsigned hbf_page_buffers;         // page buffers per bank (OCP §5.3.1.7: >= 2; default 2)
++
++  // Phase 3 (v0.4): controller scheduling policy (case-study §6)
++  // 0 = FCFS (FIFO), 1 = read-priority, 2 = write-drain (read-priority +
++  // bounded write windows when the write buffer exceeds a high-water mark).
++  int hbf_scheduler;
++  unsigned hbf_write_drain_high;    // write-buffer entries that open a drain window
++  unsigned hbf_write_drain_maxwait; // max ticks a write window may delay reads
+ 
+   // Check if an address falls in the HBF range
+   bool is_hbf_addr(new_addr_type addr) const {
+@@ -477,6 +514,7 @@ class gpgpu_sim_config : public power_config,
+     m_valid = true;
+   }
+   unsigned get_core_freq() const { return core_freq; }
++  unsigned get_dram_freq() const { return dram_freq; }
+   unsigned num_shader() const { return m_shader_config.num_shader(); }
+   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
+   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }
+diff --git a/src/gpgpu-sim/l2cache.cc b/src/gpgpu-sim/l2cache.cc
+index a6f8924f..ee89ea48 100644
+--- a/src/gpgpu-sim/l2cache.cc
++++ b/src/gpgpu-sim/l2cache.cc
+@@ -282,6 +282,10 @@ void memory_partition_unit::hbf_cycle() {
+         m_sub_partition[dest_spid]->dram_L2_queue_push(mf_return);
+         mf_return->set_status(IN_PARTITION_DRAM_TO_L2_QUEUE,
+                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++        // Return the arbitration credit borrowed when this request was
++        // issued to HBF — matches the DRAM path (dram_cycle) and prevents
++        // credit exhaustion / deadlock under sustained HBF traffic.
++        m_arbitration_metadata.return_credit(dest_spid);
+         MEMPART_DPRINTF(
+             "mem_fetch request %p return from HBF to sub partition %d\n",
+             mf_return, dest_spid);
+@@ -636,6 +640,18 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
+       bool output_full = m_L2_icnt_queue->full();
+       bool port_free = m_L2cache->data_port_free();
+       if (!output_full && port_free) {
++        // HBF requests bypass the L2 cache entirely. The cache internals
++        // rewrite the request address (mshr_addr masking), which would break
++        // is_hbf_addr() routing downstream — so route HBF traffic straight
++        // into the DRAM queue, where hbf_cycle() picks it up with the
++        // original address intact.
++        if (m_config->is_hbf_addr(mf->get_addr())) {
++          mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE,
++                         m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
++          m_L2_dram_queue->push(mf);
++          m_icnt_L2_queue->pop();
++          return;  // one request per cycle
++        }
+         std::list<cache_event> events;
+         enum cache_request_status status =
+             m_L2cache->access(mf->get_addr(), mf,
+diff --git a/src/gpgpu-sim/shader.cc b/src/gpgpu-sim/shader.cc
+index 7a4ff375..bc33a771 100644
+--- a/src/gpgpu-sim/shader.cc
++++ b/src/gpgpu-sim/shader.cc
+@@ -2261,13 +2261,22 @@ bool ldst_unit::texture_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
+ bool ldst_unit::memory_cycle(warp_inst_t &inst,
+                              mem_stage_stall_type &stall_reason,
+                              mem_stage_access_type &access_type) {
+-  if (inst.empty() || ((inst.space.get_type() != global_space) &&
+-                       (inst.space.get_type() != local_space) &&
+-                       (inst.space.get_type() != param_space_local)))
+-    return true;
++  if (inst.empty()) return true;
+   if (inst.active_count() == 0) return true;
+   if (inst.accessq_empty()) return true;
+ 
++  // Generic-space accesses (e.g. `ld.f32 [addr]` without a space qualifier —
++  // produced when a kernel dereferences a raw integer address such as a
++  // hard-coded HBF base) carry undefined_space. The functional model classifies
++  // them via whichspace(); mirror that here so these accesses are not dropped.
++  memory_space_t space = inst.space.get_type();
++  if (space == undefined_space) {
++    space = whichspace(inst.accessq_back().get_addr());
++  }
++  if ((space != global_space) && (space != local_space) &&
++      (space != param_space_local))
++    return true;
++
+   mem_stage_stall_type stall_cond = NO_RC_FAIL;
+   const mem_access_t &access = inst.accessq_back();
+ 

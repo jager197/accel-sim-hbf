@@ -11,9 +11,15 @@
 // v0.3: Models the NAND page register — a per-subarray 1-page buffer that
 // holds the most recently accessed page. Re-reading the same page hits the
 // buffer (hbf_buffer_hit_latency cycles) instead of paying full tR.
+//
+// v0.4: OCP §5.3.1.7 requires TWO cache buffers per bank (each holding at
+// least one page). The per-sub-array register becomes a small buffer array
+// sized by -gpgpu_hbf_page_buffers (default 2).
 
 #ifndef HBF_SUBARRAY_H
 #define HBF_SUBARRAY_H
+
+#include <vector>
 
 class memory_config;
 
@@ -66,17 +72,25 @@ class hbf_subarray_t {
   // Cycles remaining in current operation (decremented each cycle())
   unsigned m_timing_remaining;
 
-  // NAND timing parameters (from config, in GPU core cycles)
+  // NAND timing parameters (from config, in DRAM-clock ticks)
   unsigned m_tR;      // page read latency
   unsigned m_tPROG;   // page program latency
   unsigned m_tBERS;   // block erase latency
   unsigned m_tBUFF;   // page buffer hit latency
 
-  // Page buffer (NAND page register): holds the most recently accessed page.
-  // A re-read of the same page on the same subarray need not pay full tR.
-  bool m_buffer_valid;
-  unsigned m_buffer_page;
-  unsigned m_buffer_block;
+  // Page buffers (NAND page registers): each holds one page. A re-read of a
+  // buffered page need not pay full tR (OCP §5.3.1.7: >= 2 buffers per bank;
+  // cache-hit reads are served immediately if ordering is not violated).
+  // Disable via config (hbf_buffer_enabled 0) to model a slow storage with
+  // no page register (e.g. external spill memory).
+  struct hbf_page_buffer_t {
+    bool valid;
+    unsigned page;
+    unsigned block;
+  };
+  bool m_buffer_enabled;
+  std::vector<hbf_page_buffer_t> m_buffers;  // size = hbf_page_buffers
+  unsigned m_buffer_next;  // round-robin slot for replacement/insertion
 };
 
 #endif  // HBF_SUBARRAY_H

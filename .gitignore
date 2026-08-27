@@ -19,6 +19,11 @@ CLAUDE.md
 .venv/
 _app_cuda_version_*
 _cuobjdump_*
+_ptx_*
+_ptx2_*
+_ptxplus_*
+_ptx_errors_*
+.hbf_tmp/
 config_volta_islip.icnt
 gpgpusim.config
 gpgpu_inst_stats.txt
@@ -26,3 +31,11 @@ gpgpu_inst_stats.txt
 *.ptxas
 hbf_test
 vectorAdd
+paper/
+chat-summary-20260821-081130.md
+
+# experiment run artifacts (regenerable)
+runs/
+workloads_bin/
+experiments/logs/
+*.log

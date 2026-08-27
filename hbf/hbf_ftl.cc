@@ -2,7 +2,44 @@
 
 #include "hbf_ftl.h"
 #include "gpu-sim.h"
+#include "hbf_channel.h"
 #include <algorithm>
+
+namespace {
+// Channel-aware preferred sub-array for a logical page (v0.4): allocation
+// must land inside the page's own host channel (OCP §4.5 — a channel can
+// only use its own die set). Mirrors hbf_controller_t::channel_of_page and
+// clamps identically (channel count in [1,16], <= sub-array count).
+unsigned hbf_ftl_channel_of_page(const memory_config *cfg,
+                                 unsigned long long page) {
+  unsigned nch = cfg->hbf_num_channels;
+  if (nch == 0) nch = 1;
+  if (nch > 16) nch = 16;
+  if (nch > cfg->hbf_num_subarrays) nch = cfg->hbf_num_subarrays;
+  if (nch <= 1) return 0;
+  unsigned long long pages_per_ch =
+      (cfg->hbf_size / cfg->hbf_page_size) / nch;
+  if (cfg->hbf_channel_map == 1) {
+    unsigned ch = (unsigned)(page / pages_per_ch);
+    return ch < nch ? ch : nch - 1;
+  }
+  return (unsigned)(page % nch);
+}
+
+// Preferred (sub-array, channel-local spread) for a logical page: a stable
+// sub-array inside the page's channel, so channel interleaving spreads
+// pages across the channel's die set.
+unsigned hbf_ftl_preferred_subarray(const memory_config *cfg,
+                                    unsigned long long page) {
+  unsigned nch = cfg->hbf_num_channels;
+  if (nch == 0) nch = 1;
+  if (nch > 16) nch = 16;
+  if (nch > cfg->hbf_num_subarrays) nch = cfg->hbf_num_subarrays;
+  unsigned per_ch = cfg->hbf_num_subarrays / nch;
+  unsigned ch = hbf_ftl_channel_of_page(cfg, page);
+  return ch * per_ch + (unsigned)(page % per_ch);
+}
+}  // namespace
 
 hbf_ftl_t::hbf_ftl_t(const memory_config *config)
     : m_config(config),
@@ -10,7 +47,16 @@ hbf_ftl_t::hbf_ftl_t(const memory_config *config)
       m_gc_active(false),
       m_gc_cycles_remaining(0),
       m_gc_victim_subarray(0),
-      m_next_block_id(0) {
+      m_next_block_id(0),
+      m_max_blocks(0),
+      n_capacity_exceeded(0),
+      m_media_mode(config->hbf_media_mode != 1 ? 0 : 1),
+      m_blocks_per_zone(config->hbf_blocks_per_zone > 0
+                            ? config->hbf_blocks_per_zone
+                            : 64),
+      m_zone_remap_enabled(config->hbf_zone_remap_enabled),
+      m_zone_remap_threshold(config->hbf_zone_remap_threshold),
+      n_zone_remaps(0) {
   n_translations    = 0;
   n_allocations     = 0;
   n_gcs             = 0;
@@ -19,6 +65,20 @@ hbf_ftl_t::hbf_ftl_t(const memory_config *config)
   n_gc_stall_cycles = 0;
   n_wl_biased_allocs = 0;
   n_wl_biased_gcs    = 0;
+
+  // ── Capacity enforcement (v0.4) ─────────────────────────────────────
+  // The configured HBF capacity (hbf_size, e.g. 512 GiB) is shared by all
+  // memory partitions (one HBF controller per partition). Each partition's
+  // FTL may therefore create at most:
+  //     max_blocks = (hbf_size / n_mem) / (pages_per_block * page_size)
+  // This replaces the previous unbounded block creation, which modeled an
+  // infinite-capacity device (hbf_size was only used for address routing).
+  unsigned long long bytes_per_partition =
+      m_config->hbf_size / (m_config->m_n_mem > 0 ? m_config->m_n_mem : 1);
+  unsigned long long bytes_per_block =
+      (unsigned long long)m_config->hbf_pages_per_block *
+      m_config->hbf_page_size;
+  m_max_blocks = bytes_per_partition / bytes_per_block;
 }
 
 // ============================================================================
@@ -36,11 +96,23 @@ hbf_phys_addr_t hbf_ftl_t::translate(unsigned long long logical_page,
     }
     // Write: invalidate old mapping, allocate new page
     invalidate(logical_page);
+  } else if (!is_write) {
+    // Reads of never-written pages do NOT allocate (FTL semantics — a read
+    // never creates a mapping). Direct-map to a stable pseudo-physical
+    // location so the timing model still has a sub-array to schedule on.
+    // The pseudo location lies inside the page's own channel (v0.4).
+    // Without this, read-only streaming workloads fill every block and
+    // trigger GC on every new block (O(n^2) churn / multi-hour hangs).
+    hbf_phys_addr_t phys;
+    phys.subarray = hbf_ftl_preferred_subarray(m_config, logical_page);
+    phys.block    = 0;
+    phys.page     = 0;
+    return phys;
   }
 
   // Need to allocate: find a block with free pages
   if (!m_has_active_block) {
-    m_active_block = allocate_block(logical_page % m_config->hbf_num_subarrays);
+    m_active_block = allocate_block(hbf_ftl_preferred_subarray(m_config, logical_page));
     m_has_active_block = true;
   }
 
@@ -84,6 +156,14 @@ void hbf_ftl_t::invalidate(unsigned long long logical_page) {
   auto blk_it = m_blocks.find(bk);
   if (blk_it != m_blocks.end() && blk_it->second.valid_pages > 0) {
     blk_it->second.valid_pages--;
+    // HBF mode (OCP §11.4): no GC and no device-side data movement — a
+    // block whose last valid page is gone is simply released back to the
+    // free pool (it will be erased on reuse). SSD mode keeps the block
+    // until GC reclaims it.
+    if (m_media_mode == 0 && blk_it->second.valid_pages == 0 &&
+        !m_free_blocks.count(bk)) {
+      m_free_blocks.insert(bk);
+    }
   }
 
   // Maintain reverse index
@@ -102,6 +182,10 @@ void hbf_ftl_t::invalidate(unsigned long long logical_page) {
 // needs_gc() — check if GC is needed (free blocks below threshold)
 // ============================================================================
 bool hbf_ftl_t::needs_gc() const {
+  // HBF mode (OCP §11.4): the device NEVER runs garbage collection. The
+  // over-provisioning/GC machinery is an SSD-ism; in HBF mode blocks are
+  // released on full invalidation instead.
+  if (m_media_mode == 0) return false;
   unsigned total_blocks = m_blocks.size();
   if (total_blocks == 0) return false;
 
@@ -255,6 +339,40 @@ void hbf_ftl_t::cycle() {
       m_gc_active = false;
     }
   }
+  // HBF mode: host-controlled zone remapping accounting (OCP §11.4.1).
+  if (m_media_mode == 0 && m_zone_remap_enabled) {
+    maybe_zone_remap();
+  }
+}
+
+// ============================================================================
+// maybe_zone_remap() — host-controlled wear leveling accounting (OCP §11.4.1)
+//
+// The host divides each channel's capacity into equal-size zones and swaps a
+// Hot Zone (high PEC) with a Cold Zone (low PEC) to spread wear. HBF itself
+// never moves data. In this sprint-level model the remap is *accounted*
+// (event count + per-zone PEC spread in stats), not executed: there is no
+// per-zone data movement because the model keeps no zone-level data
+// placement. When the PEC spread between the hottest and coldest zone
+// exceeds the configured threshold, a remap event is counted.
+// ============================================================================
+void hbf_ftl_t::maybe_zone_remap() {
+  if (m_blocks.empty()) return;
+  // Per-zone PEC: zone = block_id / blocks_per_zone.
+  std::map<unsigned, unsigned long long> zone_pec;
+  for (auto &kv : m_blocks) {
+    unsigned zone = kv.first.block / m_blocks_per_zone;
+    zone_pec[zone] += kv.second.erase_count;
+  }
+  if (zone_pec.size() < 2) return;
+  unsigned long long min_pec = ~0ull, max_pec = 0;
+  for (auto &zv : zone_pec) {
+    if (zv.second < min_pec) min_pec = zv.second;
+    if (zv.second > max_pec) max_pec = zv.second;
+  }
+  if (max_pec - min_pec > m_zone_remap_threshold) {
+    n_zone_remaps++;
+  }
 }
 
 // ============================================================================
@@ -281,8 +399,7 @@ hbf_phys_addr_t hbf_ftl_t::allocate_page_for_gc(
       info.erased = false;
     } else {
       // Create a brand-new block (last resort)
-      m_active_block.subarray =
-          logical_page % m_config->hbf_num_subarrays;
+      m_active_block.subarray = hbf_ftl_preferred_subarray(m_config, logical_page);
       m_active_block.block = m_next_block_id++;
 
       block_info_t info;
@@ -357,6 +474,58 @@ hbf_ftl_t::block_key_t hbf_ftl_t::allocate_block(unsigned preferred_subarray) {
     }
   }
 
+  // ── Capacity enforcement (v0.4) ─────────────────────────────────────
+  // The device is bounded: never create a block beyond m_max_blocks.
+  // On exhaustion, recycle the block with the fewest valid pages (the
+  // "capacity overflow" path — loudly counted in stats). It is unreachable
+  // for the paper workloads (working sets are orders of magnitude below
+  // the 512 GiB configuration), but makes the model bounded and lets
+  // capacity-utilization claims be meaningful.
+  if (m_blocks.size() >= m_max_blocks) {
+    n_capacity_exceeded++;
+    block_key_t victim;
+    unsigned min_valid = ~0u;
+    bool found = false;
+    for (auto &kv : m_blocks) {
+      if (m_free_blocks.count(kv.first)) continue;
+      if (kv.second.valid_pages < min_valid) {
+        min_valid = kv.second.valid_pages;
+        victim = kv.first;
+        found = true;
+      }
+    }
+    if (!found && m_has_active_block) {
+      victim = m_active_block;
+      found = true;
+    }
+    if (found) {
+      // Discard the victim's valid mappings (counted as capacity overflow).
+      auto rev_it = m_reverse_map.find(victim);
+      if (rev_it != m_reverse_map.end()) {
+        for (unsigned long long lp : rev_it->second) {
+          auto map_it = m_mapping.find(lp);
+          if (map_it != m_mapping.end() &&
+              map_it->second.subarray == victim.subarray &&
+              map_it->second.block == victim.block) {
+            m_mapping.erase(map_it);
+          }
+        }
+        m_reverse_map.erase(rev_it);
+      }
+      block_info_t &info = m_blocks[victim];
+      info.free_pages = info.total_pages;
+      info.next_free_page = 0;
+      info.valid_pages = 0;
+      info.erased = false;  // erase-before-write erases it before programming
+      if (m_has_active_block && victim.subarray == m_active_block.subarray &&
+          victim.block == m_active_block.block) {
+        m_has_active_block = false;
+      }
+      return victim;
+    }
+    // No block at all (m_blocks empty): let the new-block path below run.
+  }
+
   // Create a new block
   hbf_ftl_t::block_key_t bk;
   bk.subarray = preferred_subarray;
@@ -404,6 +573,49 @@ void hbf_ftl_t::mark_block_erased(unsigned subarray, unsigned block) {
 }
 
 // ============================================================================
+// get_usage() — compute capacity usage summary
+// ============================================================================
+hbf_usage_info_t hbf_ftl_t::get_usage() const {
+  hbf_usage_info_t u;
+  u.total_pages = 0;
+  u.valid_pages = 0;
+  u.free_pages = 0;
+  u.total_blocks = m_blocks.size();
+  u.free_blocks = m_free_blocks.size();
+  u.logical_pages = m_mapping.size();
+  u.subarrays_used = 0;
+  u.subarrays_total = m_config->hbf_num_subarrays;
+  for (unsigned i = 0; i < 5; i++) u.histogram[i] = 0;
+
+  // Per-subarray accumulation: subarray → (valid pages, total pages)
+  std::map<unsigned, std::pair<unsigned long long, unsigned long long>> per_sa;
+
+  for (auto &kv : m_blocks) {
+    const block_info_t &info = kv.second;
+    u.total_pages += info.total_pages;
+    u.valid_pages += info.valid_pages;
+    u.free_pages += info.free_pages;
+    per_sa[kv.first.subarray].first += info.valid_pages;
+    per_sa[kv.first.subarray].second += info.total_pages;
+  }
+
+  u.subarrays_used = per_sa.size();
+  for (auto &kv : per_sa) {
+    double frac = kv.second.second > 0
+                      ? (double)kv.second.first / kv.second.second
+                      : 0.0;
+    int bucket = (kv.second.first == 0)   ? 0
+                 : (frac <= 0.25)         ? 1
+                 : (frac <= 0.50)         ? 2
+                 : (frac <= 0.75)         ? 3
+                                          : 4;
+    u.histogram[bucket]++;
+  }
+
+  return u;
+}
+
+// ============================================================================
 // Statistics printing
 // ============================================================================
 void hbf_ftl_t::print_stat(FILE *fp) const {
@@ -419,6 +631,49 @@ void hbf_ftl_t::print_stat(FILE *fp) const {
   }
   fprintf(fp, "HBF FTL Total Blocks:   %zu\n", m_blocks.size());
   fprintf(fp, "HBF FTL Free Blocks:    %zu\n", m_free_blocks.size());
+  fprintf(fp, "HBF FTL Capacity:       %llu / %llu max blocks (%.2f GiB modeled per partition)\n",
+          m_blocks.size(), m_max_blocks,
+          (double)m_max_blocks * m_config->hbf_pages_per_block *
+              m_config->hbf_page_size / (1024.0 * 1024 * 1024));
+  fprintf(fp, "HBF FTL Cap Exceeded:   %llu\n", n_capacity_exceeded);
+  fprintf(fp, "HBF FTL Media Mode:     %s (OCP %s; GC %s)\n",
+          m_media_mode == 0 ? "hbf" : "ssd",
+          m_media_mode == 0 ? "11.4: no GC, zone-based, no valid-data movement"
+                            : "SSD semantics (comparison baseline)",
+          m_media_mode == 0 ? "disabled" : "enabled");
+  if (m_media_mode == 0 && !m_blocks.empty()) {
+    // Per-zone PEC spread (host-controlled wear leveling, OCP 11.4.1).
+    std::map<unsigned, unsigned long long> zone_pec;
+    for (auto &kv : m_blocks) {
+      unsigned zone = kv.first.block / m_blocks_per_zone;
+      zone_pec[zone] += kv.second.erase_count;
+    }
+    unsigned long long min_pec = ~0ull, max_pec = 0;
+    for (auto &zv : zone_pec) {
+      if (zv.second < min_pec) min_pec = zv.second;
+      if (zv.second > max_pec) max_pec = zv.second;
+    }
+    fprintf(fp, "HBF FTL Zones:          %zu zones x %u blocks, PEC spread min=%llu max=%llu, remaps=%llu (threshold %u)\n",
+            zone_pec.size(), m_blocks_per_zone, min_pec, max_pec,
+            n_zone_remaps, m_zone_remap_threshold);
+  }
+
+  // Capacity usage — what fraction of HBF is occupied.
+  // Used pages include live data only; freed pages (GC'd or invalidated)
+  // are reusable capacity that the FTL hands back on demand.
+  hbf_usage_info_t u = get_usage();
+  double util = u.total_pages > 0 ? 100.0 * u.valid_pages / u.total_pages : 0.0;
+  fprintf(fp, "HBF Capacity Usage:    %llu / %llu pages used (%.2f%%)\n",
+          u.valid_pages, u.total_pages, util);
+  fprintf(fp, "HBF Capacity Bytes:    %llu / %llu bytes used\n",
+          u.valid_pages * m_config->hbf_page_size,
+          u.total_pages * m_config->hbf_page_size);
+  fprintf(fp, "HBF Logical Pages:     %llu live mappings\n", u.logical_pages);
+  fprintf(fp, "HBF Subarray Spread:   %u / %u subarrays hold data\n",
+          u.subarrays_used, u.subarrays_total);
+  fprintf(fp, "HBF Subarray Usage:    empty=%u low=%u mid=%u high=%u full=%u\n",
+          u.histogram[0], u.histogram[1], u.histogram[2], u.histogram[3],
+          u.histogram[4]);
 
   // Wear leveling statistics
   if (!m_blocks.empty()) {

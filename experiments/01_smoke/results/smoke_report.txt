@@ -1,0 +1,8 @@
+# HBF-Sim 冒烟测试报告
+
+- 生成时间: 2026-08-21 03:31:09
+- 结果: 19 passed, 0 failed
+- 运行目录: /inspire/qb-dev/project/integrated-training-and-promotion-system/liyaqi-253108120131/hbf_sim/accel-sim-hbf-dev/experiments/01_smoke/runs
+
+覆盖: DRAM 功能正确性、HBF 路由/读路径、写→读回数据往返、
+MSHR/页缓存/FTL/GC/磨损/容量统计健全性。详见各 run.log。
