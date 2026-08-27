@@ -10,37 +10,6 @@ HBF is still in early stages — first chip samples are expected in 2H 2026, wit
 
 My research involves HBF-integrated GPU architectures. Since there's no publicly available simulation platform, I decided to build one myself.
 
-## Versions
-
-### v0.4 (current) -- OCP spec-fidelity: Host Channels + no-GC Zone media + write-path semantics
-
-The paper-focused release. Brings the model from "a NAND timing model inside GPGPU-Sim"
-(~30% of the OCP HBF v0.7.0 semantics) toward a spec-faithful device model. See
-`docs/validation.md` for the timing/clock-domain rationale and the MQSim cross-check.
-
-- **Multi Host Channel model** (`-gpgpu_hbf_num_channels`, default 2, max 16 per cube:
-  16 channels / 8 memory partitions) -- each channel owns a fixed NAND die slice, has
-  its own UCIe/AXI interface bandwidth credit (`-gpgpu_hbf_channel_bw_gbps`, grade-3
-  192 GB/s per channel) and outstanding-write limit (OCP §5.4.1.7). Requests are
-  channel-affine: no cross-channel scheduling, no "any idle sub-array" fallback.
-- **Channel address mapping** -- `-gpgpu_hbf_channel_map 0` = 4 KiB round-robin
-  interleave (OCP §11.1.1); `1` = contiguous per-channel regions (OCP §13.3.3).
-- **Media management mode** (`-gpgpu_hbf_media_mode`) -- `0` = **hbf (default)**:
-  NO device-side garbage collection, NO valid-data movement (OCP §11.4); fully
-  invalidated blocks return to the free pool; zone PEC accounting for host-controlled
-  wear leveling. `1` = **ssd**: GREEDY GC with relocation, as a comparison baseline
-  (the paper's E3/E5 "SSD models mispredict HBF" experiments).
-- **Write path per OCP §5.4.1** -- aggregation deadline (`-gpgpu_hbf_write_agg_timeout`),
-  partial-page program accounting, per-page serialization (double-flush fixed),
-  idle-drain with a quiet period, configurable write-buffer depth.
-- **Page buffers per bank** (`-gpgpu_hbf_page_buffers`, default 2, OCP §5.3.1.7).
-- **Capacity enforcement** -- FTL block count capped by configured capacity
-  (`HBF FTL Capacity` / `Cap Exceeded` stats).
-- **Clock-domain fix** -- NAND timers count DRAM-clock ticks (tR = 15 µs = 12,750
-  ticks at 850 MHz); stats report tick-to-µs and per-channel summary.
-- **Scheduler policies** -- `-gpgpu_hbf_scheduler 0/1/2` = FCFS / read-priority /
-  write-drain (bounded write windows, paper §6).
-
 ## How to Run
 
 Prerequisites: Ubuntu 20.04+, CUDA 11–12, an NVIDIA GPU.

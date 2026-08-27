@@ -1,6 +1,7 @@
 # 实验目录 git 规则：忽略生成物，保留源码与结果
 */runs/
 */workloads_bin/
+*/results
 logs/
 configs/*.config
 __pycache__/
@@ -8,12 +9,3 @@ __pycache__/
 实验报告.pdf
 md2pdf.py
 README.md
-01_kv_write/results
-02_kv_read/results
-03_kv_write/results
-04_kv_write/results
-05_kv_read/results
-06_kv_write/results
-07_kv_read/results
-08_kv_write/results
-09_kv_read/results

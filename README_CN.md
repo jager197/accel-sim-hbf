@@ -10,29 +10,6 @@ HBF 目前仍在早期阶段——首批样片预计 2026 下半年出货，商�
 
 本人的研究涉及 HBF 集成的 GPU 架构。因缺乏公开的仿真平台，于是自行构建。
 
-## 版本记录
-
-### v0.4（当前版）-- OCP 规范保真：多 Host Channel + 无 GC 介质管理 + 写路径语义
-
-论文冲刺版。按 OCP HBF v0.7.0 把模型从"GPGPU-Sim 里的 NAND 时序模型"
-（约 30% 规范语义覆盖率）升级为规范保真设备模型。时序依据与对照见
-`docs/validation.md`。
-
-- **多 Host Channel**（`-gpgpu_hbf_num_channels`，默认每分区 2 = cube 16 通道 ÷ 8 分区）
-  ——每通道绑定固定 NAND die 切片、独立 UCIe/AXI 带宽信用（grade-3 每通道 192 GB/s）
-  与写并发上限（OCP §5.4.1.7）；请求通道亲和，禁止跨通道调度。
-- **通道地址映射**：`-gpgpu_hbf_channel_map 0` = 4 KiB 轮转交错（OCP §11.1.1）；
-  `1` = 连续分通道区域（OCP §13.3.3）。
-- **介质管理模式**（`-gpgpu_hbf_media_mode`）：`0` = **hbf**（默认）——无设备侧垃圾回收、
-  无有效数据搬移（OCP §11.4），全失效块即时回收，zone PEC 统计支撑主机磨损均衡；
-  `1` = **ssd**——GREEDY GC + 搬移，作为对比基线（论文 E3/E5 实验）。
-- **规范写路径**（OCP §5.4.1）：4 KiB 聚合截止时间、部分页编程统计、每页串行化
-  （修复双重 flush/丢请求 bug）、带安静期的空闲 drain、可配置写缓冲深度。
-- **每 bank 页缓冲**（`-gpgpu_hbf_page_buffers`，默认 2，OCP §5.3.1.7）。
-- **容量强制**：FTL 建块数按配置容量封顶（`HBF FTL Capacity` 统计）。
-- **时钟域修正**：NAND 定时器统一按 DRAM 时钟节拍（tR = 15 µs = 12750 tick @850MHz）。
-- **调度策略**：`-gpgpu_hbf_scheduler 0/1/2` = FCFS / 读优先 / 写隔离（有界写窗口，论文 §6）。
-
 ## 快速开始
 
 环境要求：Ubuntu 20.04+，CUDA 11–12，NVIDIA GPU。
