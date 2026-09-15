@@ -1,0 +1,17 @@
+# Canonical files copied from hbf/ into src/gpgpu-sim/ by setup_hbf.sh.
+hbf_channel.h
+hbf_controller.h
+hbf_controller.cc
+hbf_cube.h
+hbf_cube.cc
+hbf_system.h
+hbf_system.cc
+hbf_mapping.h
+hbf_ftl.h
+hbf_ftl.cc
+hbf_page_cache.h
+hbf_page_cache.cc
+hbf_subarray.h
+hbf_subarray.cc
+hbf_trace.h
+hbf_trace.cc

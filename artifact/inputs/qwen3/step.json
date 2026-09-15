@@ -1,0 +1,10 @@
+{
+  "step": 2,
+  "input_ids": [
+    [
+      41776
+    ]
+  ],
+  "context_tokens": 29,
+  "kind": "decode"
+}

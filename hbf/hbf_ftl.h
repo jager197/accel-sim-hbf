@@ -28,12 +28,16 @@ struct hbf_phys_addr_t {
   hbf_phys_addr_t() : subarray(0), block(0), page(0) {}
   hbf_phys_addr_t(unsigned sa, unsigned blk, unsigned pg)
       : subarray(sa), block(blk), page(pg) {}
+
+  bool valid() const { return subarray != ~0u && block != ~0u && page != ~0u; }
 };
 
 // Capacity usage summary, computed by hbf_ftl_t::get_usage().
 // Lets the simulator report "what fraction of HBF is occupied" — useful for
 // sizing weight / KV-cache regions in a paper workload.
 struct hbf_usage_info_t {
+  unsigned long long configured_pages; // logical cube address span
+  unsigned long long allocated_pages;  // pages in allocated physical blocks
   unsigned long long total_pages;   // physical pages across all allocated blocks
   unsigned long long valid_pages;   // pages currently holding live data
   unsigned long long free_pages;    // free pages within allocated blocks
@@ -68,6 +72,8 @@ class hbf_ftl_t {
   //   mode 1 (ssd): classic GREEDY GC with page relocation (comparison
   //     baseline for quantifying how SSD-derived models mispredict HBF).
   unsigned media_mode() const { return m_media_mode; }
+  bool capacity_error() const { return m_capacity_error; }
+  bool mapping_error() const { return m_mapping_error; }
   // Garbage Collection: pick victim block, remap valid pages, erase
   // (SSD mode only; no-op in HBF mode).
   void gc();
@@ -129,12 +135,16 @@ class hbf_ftl_t {
   };
   std::map<block_key_t, block_info_t> m_blocks;
 
-  // Free block pool (ERASED, ready for allocation)
+  // Reclaimable block pool. block_info_t::erased distinguishes SSD-GC blocks
+  // that are ready to program from dirty HBF-invalidated blocks.
   std::set<block_key_t> m_free_blocks;
 
-  // Active block for allocation
-  block_key_t m_active_block;
-  bool m_has_active_block;
+  // Each subarray allocates independently. A single cube-wide active block
+  // can violate channel affinity as soon as writes target another subarray.
+  std::map<unsigned, block_key_t> m_active_blocks;
+
+  bool is_active_block(const block_key_t &block) const;
+  void deactivate_block(const block_key_t &block);
 
   // Find or allocate a block for a new write
   block_key_t allocate_block(unsigned preferred_subarray);
@@ -151,16 +161,20 @@ class hbf_ftl_t {
   unsigned m_next_block_id;
 
   // ── Capacity enforcement (v0.4) ──────────────────────────────────────
-  // The modeled device is NOT infinite. Per partition the FTL may create at
-  // most m_max_blocks physical blocks, derived from the configured HBF
-  // capacity:  max_blocks = (hbf_size / n_mem_partitions) / (pages_per_block
-  // * page_size). When capacity is exhausted, allocation falls back to
-  // recycling the block with the fewest valid pages and increments
-  // n_capacity_exceeded (loudly visible in stats; data in recycled blocks is
-  // discarded — this path is unreachable for the current workloads, whose
-  // working sets are orders of magnitude below 512 GiB).
+  // The modeled device is NOT infinite. The cube-wide FTL may create at most
+  // m_max_blocks physical blocks, derived from the configured HBF capacity:
+  // max_blocks = hbf_size / (pages_per_block * page_size). When capacity is
+  // exhausted, allocation returns an invalid physical address and the
+  // controller completes the affected request with an explicit error.
   unsigned long long m_max_blocks;
   unsigned long long n_capacity_exceeded;
+  bool m_capacity_error;
+
+  // Explicit page-to-channel placement table. In placement mode 2, loading
+  // failures and pages missing from this table are errors; there is no
+  // fallback to an implicit placement policy.
+  std::map<unsigned long long, unsigned> m_explicit_channel_map;
+  bool m_mapping_error;
 
   // ── Media management mode (v0.4) ─────────────────────────────────────
   int m_media_mode;                  // 0 = hbf (no GC), 1 = ssd (GC baseline)

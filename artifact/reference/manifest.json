@@ -1,0 +1,80 @@
+{
+  "placement_cases.csv": {
+    "source": "paper/data/placement_cases.csv",
+    "source_sha256": "e0837ddb276b6b50c73086fd216093d6aa6940ea0b1c2c125da165ac959a23e7",
+    "sha256": "8f517b43b70830ab08c0ac24d683a4eabd84440725c11845876374ac77de70ec",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "media_saturation.csv": {
+    "source": "paper/data/media_saturation.csv",
+    "source_sha256": "1d81ea153e05864056c939408207b34ac0dba6866531f3c99205698fbde1ca8b",
+    "sha256": "e4041081f2bca04f6d04a7fcb406c2199765b83b3d3fec077eb966fb8c76fa61",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "phase_boundary_summary.csv": {
+    "source": "paper/data/phase_boundary_summary.csv",
+    "source_sha256": "509e509dec9017fc013fa62223302dbbdcb70d1c1a58dc4055a18c9a7357580c",
+    "sha256": "57908c8cfb4f8a65e52b45ee78c38c2333e4dd6719aca35c01ba11cdc020e649",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "cost_overhead_audited.csv": {
+    "source": "paper/data/cost_overhead_audited.csv",
+    "source_sha256": "f5cdbfa5bb28936c8440d5e7718545632fe5b4931bce24619c5a76020b1701e4",
+    "sha256": "7aeb734f799826002a4a4592df83e054a9ae2a1626a2ba1a216c55468570cedc",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "cost_capacity_summary.csv": {
+    "source": "paper/data/cost_capacity_summary.csv",
+    "source_sha256": "13348941d8c7aa614a041614ee3ddab4136d79678f30eefd8026645131ea03ce",
+    "sha256": "13348941d8c7aa614a041614ee3ddab4136d79678f30eefd8026645131ea03ce",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "validation_channel_summary.csv": {
+    "source": "paper/data/validation_channel_summary.csv",
+    "source_sha256": "46b4d9cd221d650dd20f8d5a7c0f92b7b2e9f2b7a8d37cd7d8b8ea1982f33f4e",
+    "sha256": "46b4d9cd221d650dd20f8d5a7c0f92b7b2e9f2b7a8d37cd7d8b8ea1982f33f4e",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "validation_read_summary.csv": {
+    "source": "paper/data/validation_read_summary.csv",
+    "source_sha256": "c9a8eeeccc001afa72e632291628905f19586f0c002c600e7c8b3bb0d87467b2",
+    "sha256": "c9a8eeeccc001afa72e632291628905f19586f0c002c600e7c8b3bb0d87467b2",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "validation_dram_summary.csv": {
+    "source": "paper/data/validation_dram_summary.csv",
+    "source_sha256": "283d5d6699bb2df76c2b4cc756b0da0faf9dc22bf355a1e876d107474f4e3626",
+    "sha256": "283d5d6699bb2df76c2b4cc756b0da0faf9dc22bf355a1e876d107474f4e3626",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "hotspots.csv": {
+    "source": "experiments/20_placement_hotspots/results/20260910/summary.csv",
+    "source_sha256": "5b9d700e4a41f3a795f788cb6bae6f17b47879d12cc45198f89c6f355ad83cbb",
+    "sha256": "13b37ef5a1120b353098a1ed78fd21fb6e9fb83f4cc04d991d48d1b486eb8e49",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "gain_summary.csv": {
+    "source": "experiments/25_t02_t03_comparison/gain_summary.csv",
+    "source_sha256": "f910568c3822815ccbdf083834e6efbcc81c3916dba7826890d4f995366a51a8",
+    "sha256": "80e96144c658ca3b8dbd87fda8098e7ecf03e23ef740e71b1695fba44a914755",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "external_summary.csv": {
+    "source": "experiments/25_t02_t03_comparison/external_summary.csv",
+    "source_sha256": "0c4b0279e905212ff1155c0269bcd573db6d47def1bc32717fd7611837921b3e",
+    "sha256": "51bb0ab31a3da7f18b1e08a4c7412491627a56875aea772fbf2b3447738037e9",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "replay_summary.csv": {
+    "source": "experiments/25_t02_t03_comparison/replay_summary.csv",
+    "source_sha256": "36d4e5ddde69f3664cc551dfd66c571d3b3801b354e7613290d07e658620c371",
+    "sha256": "73f9f02a0ef714fee72c3d1a15d753b5c2b52c0ccbc945b1b7c080cb5b37a08a",
+    "normalization": "workspace prefix removed from provenance columns only"
+  },
+  "qwen_decode.json": {
+    "source": "experiments/23_qwen3_1p7b/full_result/run/run.log",
+    "source_sha256": "6f7547279499e7d2cec7a15d4b3462071a886cb2c546c58ee03e49d505c10d0d",
+    "sha256": "ddc3d49538eebabc370ee437397d0d0278b16bd77489b5660c1e3560c8cd35b3",
+    "normalization": "final aggregate counters parsed from original log; historical exit status unavailable"
+  }
+}

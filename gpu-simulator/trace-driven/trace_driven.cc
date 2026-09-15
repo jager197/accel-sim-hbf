@@ -328,12 +328,17 @@ bool trace_warp_inst_t::parse_from_trace_struct(
         memory_op = memory_load;
       else
         memory_op = memory_store;
-      // resolve generic loads
+      // Resolve generic loads using the address metadata emitted by NVBit.
+      // Missing base metadata is not evidence that an instruction accesses
+      // CUDA Shared Memory.  Explicit LDS/STS opcodes above already cover
+      // shared memory, so the conservative fallback is global memory.  This
+      // keeps real global traces eligible for HBF routing and avoids the old
+      // behavior that silently classified an entire metadata-less trace as
+      // shared traffic.
       if (kernel_trace_info->shmem_base_addr == 0 ||
           kernel_trace_info->local_base_addr == 0) {
-        // shmem and local addresses are not set
-        // assume all the mem reqs are shared by default
-        space.set_type(shared_space);
+        space.set_type(global_space);
+        cache_op = CACHE_ALL;
       } else {
         // check the first active address
         for (unsigned i = 0; i < warp_size(); ++i)

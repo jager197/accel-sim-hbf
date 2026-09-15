@@ -1,0 +1,4 @@
+# Only requirements are needed by the development image.
+*
+!Dockerfile
+!requirements.txt

@@ -1,5 +1,6 @@
-pyyaml
-pandas
-plotly
-kaleido
-psutil
+PyYAML==6.0.2
+pandas==2.2.3
+plotly==5.24.1
+kaleido==0.2.1
+psutil==7.0.0
+matplotlib==3.10.3

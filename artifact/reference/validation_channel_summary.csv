@@ -1,0 +1,6 @@
+channels,cycles,hbf_requests,page_reads,mshr_hits,trace_requests,trace_valid
+1,5621,64,64,0,64,1
+2,5621,64,64,0,64,1
+4,5621,64,64,0,64,1
+8,5621,64,64,0,64,1
+16,5621,64,64,0,64,1

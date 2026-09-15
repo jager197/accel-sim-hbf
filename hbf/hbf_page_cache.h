@@ -1,4 +1,5 @@
-// HBF v0.4: Shared Page Cache (SRAM on logic die)
+// HBF logic-die page cache (SRAM on the HBF logic die).
+// This structure is distinct from CUDA Shared Memory and GPU L2.
 //
 // An LRU cache of recently-read NAND pages, sitting between the MSHR
 // layer and sub-array scheduling. Cache hits avoid the full NAND page

@@ -26,7 +26,11 @@ class hbf_channel_t {
         m_num_subarrays(num_subarrays),
         m_bw_bytes_per_tick(bw_bytes_per_tick),
         m_credit_bytes(0.0),
-        m_max_credit_bytes(bw_bytes_per_tick * 512.0) {  // ~512-tick burst cap
+        // Preserve fractional-bandwidth progress while preventing idle time
+        // from accumulating an unbounded same-tick burst. One 128 B maximum
+        // memory transaction is the largest burst above the per-tick budget.
+        m_max_credit_bytes(bw_bytes_per_tick > 128.0 ? bw_bytes_per_tick
+                                                     : 128.0) {
     n_requests = 0;
     n_page_reads = 0;
     n_page_programs = 0;
@@ -34,6 +38,8 @@ class hbf_channel_t {
     n_outstanding_writes = 0;
     n_writes_deferred = 0;
     n_transfer_stall_ticks = 0;
+    n_active_ticks = 0;
+    n_transfer_bytes = 0;
   }
 
   unsigned get_id() const { return m_id; }
@@ -47,15 +53,16 @@ class hbf_channel_t {
            subarray_id < m_first_subarray + m_num_subarrays;
   }
   // Map a channel-local sub-array index to a global sub-array id.
-  unsigned subarray_of_local(unsigned local_idx) const {
+  unsigned subarray_of_local(unsigned long long local_idx) const {
     return m_first_subarray + (local_idx % m_num_subarrays);
   }
 
   // ── Interface transfer credit (UCIe/AXI link bandwidth) ──────────────
   // Each tick the channel's link can carry at most m_bw_bytes_per_tick
   // bytes (spec Table 2: 256 GB/s raw x 75% AXI efficiency per channel).
-  // Returns true if a transfer of `bytes` is allowed now, and consumes
-  // the credit. Credits accumulate up to a burst cap.
+  // Returns true if a transfer of `bytes` is allowed now and consumes the
+  // credit. The token bucket permits at most one maximum-sized transaction
+  // above a tick's budget, which is needed when bytes/tick is below 128 B.
   bool try_consume_credit(double bytes) {
     if (bytes > m_credit_bytes) return false;
     m_credit_bytes -= bytes;
@@ -80,8 +87,12 @@ class hbf_channel_t {
   unsigned long long n_page_programs;
   unsigned long long n_block_erases;
   unsigned n_outstanding_writes;
+  // Flush deferral attempts; a request retried across ticks contributes once
+  // per attempt, so this is a pressure/stall metric rather than unique writes.
   unsigned long long n_writes_deferred;
   unsigned long long n_transfer_stall_ticks;
+  unsigned long long n_active_ticks;
+  unsigned long long n_transfer_bytes;
 
  private:
   unsigned m_id;

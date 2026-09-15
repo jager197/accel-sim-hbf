@@ -1,0 +1,16 @@
+{
+  "cycles": 352434530,
+  "read_completions": 107540992,
+  "page_reads": 27724248,
+  "requests": 107540992,
+  "buffer_hits": 26884070,
+  "captured_kernels": 1819,
+  "completed_kernels": 1819,
+  "milliseconds": 249.9535673758865,
+  "returned_sector_bytes": 3441311744,
+  "array_read_bytes": 3441369088,
+  "validation_scope": "final aggregate counters; not per-request lifecycle validation",
+  "historical_exit_status": "run.rc not retained; counters extracted from final log, not a fresh execution",
+  "source": "experiments/23_qwen3_1p7b/full_result/run/run.log",
+  "source_log_sha256": "6f7547279499e7d2cec7a15d4b3462071a886cb2c546c58ee03e49d505c10d0d"
+}

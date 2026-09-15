@@ -1,0 +1,26 @@
+{
+  "reads.config": {
+    "source": "experiments/16_paper_extension/results/20260907-paper-final/configs/reads_t12750_interleave_demand.config",
+    "source_sha256": "68c320887a51a531b92e51855ff1961e51ac586dd38843acb8b97e2435469d5d",
+    "sha256": "f82d70d77fb9a4604514458c2b6953d566972b5111bfb8662e3be93275c4c55a",
+    "normalization": "clear output trace and generated channel-map paths; all model parameters preserved"
+  },
+  "writes.config": {
+    "source": "experiments/16_paper_extension/results/20260907-paper-final/configs/writes_t12750_shared_fcfs.config",
+    "source_sha256": "1c67b79886ceafdd5e147cd960cca195e295285ef7ab016bd4ca8165d4ee522b",
+    "sha256": "ab35e086a423e5723e5fbd3c240ead1e289814e7184bae4f453ee22a7610ad7f",
+    "normalization": "clear output trace and generated channel-map paths; all model parameters preserved"
+  },
+  "scaling.config": {
+    "source": "experiments/16_paper_extension/results/20260907-paper-final/configs/scaling_t12750_p512_c16.config",
+    "source_sha256": "325aba82ec47967737aaf0148c459867ccfad0dd409d76fabc8147ae31b96fe6",
+    "sha256": "7b21c5e1f4ec607022d68b1e7f131154c3fc4e88c73d980f7f76e4d0eac57cd8",
+    "normalization": "clear output trace and generated channel-map paths; all model parameters preserved"
+  },
+  "qwen3.config": {
+    "source": "experiments/23_qwen3_1p7b/full_result/gpgpusim.config",
+    "source_sha256": "93a6cfb344ef5f870510ead90a6ce982c23592f223987f1eb2fc9b12c13dbd04",
+    "sha256": "30cbf9949331749b8a8b400b2b281a96900e2b844234c2441a741a92a3996cc4",
+    "normalization": "clear output trace and generated channel-map paths; all model parameters preserved"
+  }
+}

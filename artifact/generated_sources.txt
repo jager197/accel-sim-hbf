@@ -1,0 +1,28 @@
+# Parser snapshots used when bison/flex are not installed.
+# Paths are relative to the pinned GPGPU-Sim checkout and to
+# artifact/gpgpusim_generated/.
+cuobjdump_to_ptxplus/generated/elf_lexer.cc
+cuobjdump_to_ptxplus/generated/elf_parser.cc
+cuobjdump_to_ptxplus/generated/elf_parser.hh
+cuobjdump_to_ptxplus/generated/header_lexer.cc
+cuobjdump_to_ptxplus/generated/header_parser.cc
+cuobjdump_to_ptxplus/generated/header_parser.hh
+cuobjdump_to_ptxplus/generated/lex.ptx_.c
+cuobjdump_to_ptxplus/generated/ptx.tab.c
+cuobjdump_to_ptxplus/generated/ptx.tab.h
+cuobjdump_to_ptxplus/generated/sass_lexer.cc
+cuobjdump_to_ptxplus/generated/sass_parser.cc
+cuobjdump_to_ptxplus/generated/sass_parser.hh
+libcuda/generated/cuobjdump_lexer.c
+libcuda/generated/cuobjdump_parser.c
+libcuda/generated/cuobjdump_parser.h
+src/cuda-sim/generated/lex.ptx_.c
+src/cuda-sim/generated/lex.ptxinfo_.c
+src/cuda-sim/generated/ptx.tab.c
+src/cuda-sim/generated/ptx.tab.h
+src/cuda-sim/generated/ptx_parser_decode.def
+src/cuda-sim/generated/ptxinfo.tab.c
+src/cuda-sim/generated/ptxinfo.tab.h
+src/intersim2/generated/lex.yy.c
+src/intersim2/generated/y.tab.c
+src/intersim2/generated/y.tab.h

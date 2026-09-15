@@ -1,0 +1,16 @@
+{
+  "valid": true,
+  "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+  "files": [
+    {
+      "file": "model-00001-of-00002.safetensors",
+      "sha256": "169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5",
+      "bytes": 3441185608
+    },
+    {
+      "file": "model-00002-of-00002.safetensors",
+      "sha256": "912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9",
+      "bytes": 622329984
+    }
+  ]
+}

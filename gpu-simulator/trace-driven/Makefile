@@ -47,6 +47,9 @@ endif
 
 OPTFLAGS += -g3 -fPIC -std=c++11
 
+INCLUDES = -I$(CUDA_INSTALL_PATH)/include -I. \
+	-I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src
+
 SRCS = $(shell ls *.cc)
 EXCLUDES =
 CSRCS = $(filter-out $(EXCLUDES), $(SRCS))
@@ -55,12 +58,13 @@ OBJS = $(CSRCS:%.cc=$(BUILD_DIR)/%.o)
 trace-driven:$(OBJS)
 
 $(BUILD_DIR)/%.o: %.cc
-	$(CXX) $(OPTFLAGS) $(CXXFLAGS) -I$(CUDA_INSTALL_PATH)/include -I. -I$(GPGPUSIM_ROOT)/libcuda -I$(GPGPUSIM_ROOT)/src -c $*.cc -o $(BUILD_DIR)/$*.o
+	$(CXX) $(OPTFLAGS) $(CXXFLAGS) $(INCLUDES) -c $*.cc -o $(BUILD_DIR)/$*.o
 
 $(BUILD_DIR)/trace-driven.Makefile.makedepend: depend
 
 depend:
 	touch $(BUILD_DIR)/trace-driven.Makefile.makedepend
-	makedepend -f$(BUILD_DIR)/trace-driven.Makefile.makedepend -p$(BUILD_DIR)/ $(CSRCS) 2> /dev/null
+	makedepend -f$(BUILD_DIR)/trace-driven.Makefile.makedepend \
+		-p$(BUILD_DIR)/ $(INCLUDES) $(CSRCS) 2> /dev/null
 
 include $(BUILD_DIR)/trace-driven.Makefile.makedepend

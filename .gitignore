@@ -31,7 +31,6 @@ gpgpu_inst_stats.txt
 *.ptxas
 hbf_test
 vectorAdd
-paper/
 chat-summary-20260821-081130.md
 
 # experiment run artifacts (regenerable)
@@ -39,6 +38,28 @@ runs/
 workloads_bin/
 experiments/logs/
 *.log
-docs/
-# local docs (not synced)
-docs/
+
+# Reproducible artifact outputs (inputs and runners remain tracked)
+/artifact_runs/
+__pycache__/
+*.py[cod]
+
+# Private research materials and local planning
+/paper/
+/docs/
+/task_plan.md
+/notes.md
+/main_zh.source.sha256
+/.pytest_cache/
+/hbf/patches/archive/
+/scripts/build_paper.sh
+/scripts/checkpoint_project.sh
+/util/traces/audit_paper_evidence.py
+/util/traces/tests/test_qwen_anchor.py
+# Public numerical reference data (global CSV ignore is intentional elsewhere)
+!/artifact/reference/*.csv
+!/artifact/inputs/**/*.csv
+/.github/workflows/weekly.yml
+/artifact/figures/*.pdf
+/artifact/figures/*.png
+/artifact/figures/*manifest.json

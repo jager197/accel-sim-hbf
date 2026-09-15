@@ -1,0 +1,260 @@
+{
+  "_id": "680da7517bcb5198014ad394",
+  "id": "Qwen/Qwen3-1.7B",
+  "private": false,
+  "pipeline_tag": "text-generation",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "qwen3",
+    "text-generation",
+    "conversational",
+    "arxiv:2505.09388",
+    "base_model:Qwen/Qwen3-1.7B-Base",
+    "base_model:finetune:Qwen/Qwen3-1.7B-Base",
+    "license:apache-2.0",
+    "text-generation-inference",
+    "endpoints_compatible",
+    "deploy:sagemaker",
+    "deploy:azure",
+    "region:us"
+  ],
+  "downloads": 3585353,
+  "likes": 541,
+  "modelId": "Qwen/Qwen3-1.7B",
+  "author": "Qwen",
+  "sha": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+  "lastModified": "2025-07-26T03:46:32.000Z",
+  "gated": false,
+  "disabled": false,
+  "widgetData": [
+    {
+      "text": "Hi, what can you help me with?"
+    },
+    {
+      "text": "What is 84 * 3 / 2?"
+    },
+    {
+      "text": "Tell me an interesting fact about the universe!"
+    },
+    {
+      "text": "Explain quantum computing in simple terms."
+    }
+  ],
+  "model-index": null,
+  "config": {
+    "architectures": [
+      "Qwen3ForCausalLM"
+    ],
+    "model_type": "qwen3",
+    "tokenizer_config": {
+      "bos_token": null,
+      "chat_template": "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}\n        {{- messages[0].content + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n    {%- if messages[0].role == 'system' %}\n        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}\n        {%- set ns.multi_step_tool = false %}\n        {%- set ns.last_query_index = index %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if message.content is string %}\n        {%- set content = message.content %}\n    {%- else %}\n        {%- set content = '' %}\n    {%- endif %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- else %}\n            {%- if '</think>' in content %}\n                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}\n                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}\n            {%- endif %}\n        {%- endif %}\n        {%- if loop.index0 > ns.last_query_index %}\n            {%- if loop.last or (not loop.last and reasoning_content) %}\n                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}\n            {%- else %}\n                {{- '<|im_start|>' + message.role + '\\n' + content }}\n            {%- endif %}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}",
+      "eos_token": "<|im_end|>",
+      "pad_token": "<|endoftext|>",
+      "unk_token": null
+    }
+  },
+  "cardData": {
+    "library_name": "transformers",
+    "license": "apache-2.0",
+    "license_link": "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/LICENSE",
+    "pipeline_tag": "text-generation",
+    "base_model": [
+      "Qwen/Qwen3-1.7B-Base"
+    ]
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModelForCausalLM",
+    "pipeline_tag": "text-generation",
+    "processor": "AutoTokenizer"
+  },
+  "siblings": [
+    {
+      "rfilename": ".gitattributes",
+      "blobId": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+      "size": 1570
+    },
+    {
+      "rfilename": "LICENSE",
+      "blobId": "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+      "size": 11343
+    },
+    {
+      "rfilename": "README.md",
+      "blobId": "88aaef81cfe31bcdfe47203649a69ff12042826a",
+      "size": 13963
+    },
+    {
+      "rfilename": "config.json",
+      "blobId": "044a86ecf7cb32238f3fae4184e55d354787edec",
+      "size": 726
+    },
+    {
+      "rfilename": "generation_config.json",
+      "blobId": "20a8a9156fc8c3f25295ca067f61fdf120d517c5",
+      "size": 239
+    },
+    {
+      "rfilename": "merges.txt",
+      "blobId": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+      "size": 1671853
+    },
+    {
+      "rfilename": "model-00001-of-00002.safetensors",
+      "blobId": "1414f1bda72e17b63551d847c05c68e3396ba717",
+      "size": 3441185608,
+      "lfs": {
+        "sha256": "169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5",
+        "size": 3441185608,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "model-00002-of-00002.safetensors",
+      "blobId": "4aab3b30a4b8c6c1d0437a2576e0bea08507f12c",
+      "size": 622329984,
+      "lfs": {
+        "sha256": "912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9",
+        "size": 622329984,
+        "pointerSize": 134
+      }
+    },
+    {
+      "rfilename": "model.safetensors.index.json",
+      "blobId": "986d7db875b47d21f68530f6baac038f1b297b39",
+      "size": 25605
+    },
+    {
+      "rfilename": "tokenizer.json",
+      "blobId": "cd71f61a15a522601badb3dc960d800d9cb3766c",
+      "size": 11422654,
+      "lfs": {
+        "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "size": 11422654,
+        "pointerSize": 133
+      }
+    },
+    {
+      "rfilename": "tokenizer_config.json",
+      "blobId": "417d038a63fa3de29cfde265caedae14d1a58d92",
+      "size": 9732
+    },
+    {
+      "rfilename": "vocab.json",
+      "blobId": "4783fe10ac3adce15ac8f358ef5462739852c569",
+      "size": 2776833
+    }
+  ],
+  "spaces": [
+    "embedl/hfviewer",
+    "pliny-the-prompter/obliteratus",
+    "EuroEval/euroeval_leaderboard",
+    "Qwen/Qwen3-Demo",
+    "VIDraft/global-llm-leaderboard",
+    "eduagarcia/open_pt_llm_leaderboard",
+    "tomg-group-umd/lm-watermarking",
+    "ginigen-ai/smol-worldcup",
+    "aizip-dev/SLM-RAG-Arena",
+    "whitecircle/circle-guard-bench",
+    "dqy08/InfoLens1",
+    "AlexWortega/activation-oracle",
+    "nyamberekimeu/Qwen3-Token-Counter",
+    "artificialguybr/CanIRunThisLLM",
+    "stanley-00/slm-testing",
+    "VIDraft/Qwen3",
+    "build-small-hackathon/naija-solar",
+    "VIDraft/Qwen3-1_7B",
+    "oopere/optipfair-bias-analyzer",
+    "hfmlsoc/Lit_Review_with_LMs",
+    "TTimur/OpenLLMKyrgyzLeaderboard_v0.1",
+    "agarwalanu3103/clarify-rl",
+    "build-small-hackathon/stride-running-coach",
+    "build-small-hackathon/The-Eighth-Exit",
+    "Kodacoda/obliteratus",
+    "dumbordumber/obliteratus",
+    "tsrinath/Scaler-Round-2",
+    "build-small-hackathon/repair-guy",
+    "build-small-hackathon/quantsafe-certifier",
+    "build-small-hackathon/analyst-buddy",
+    "GiacomoDeLuca/orrery-demo",
+    "tuanhqv123/Qwen-Qwen3-1.7B",
+    "asifHuggingFace/webui",
+    "Shabah2000/Qwen44-Demo",
+    "fagun18/fagun-browser-testing",
+    "dromero14521/obliteratus",
+    "kicfk/obliteratus",
+    "aaahmet/obliteratus",
+    "Heartsync/MARL-mobile-backup",
+    "rbinrs/obliteratus",
+    "Ngixdev/obliteratus",
+    "Deadmon/obliteratus",
+    "atharva-again/sakha",
+    "akshay4/budget-router-openenv",
+    "sankalpsetia/atc-advisor-v0",
+    "gowtham-sai-yadav/oncall-env",
+    "Mayank022/api-testing-env",
+    "musharraf7/esctr-environment",
+    "zaitsev-e-a/school21-lpk-ai-helper",
+    "Kaviya-M/meta-agent-gym",
+    "daniel8919/limbic-reasoning-agent",
+    "FluffyAIcode/LLM-KA-Cache-Compress",
+    "ridhampatel2k4/code-sentinel-env",
+    "Akshaykumarbm/pyre_env",
+    "Oldnoob0007/madis-openenv",
+    "lablab-ai-amd-developer-hackathon/ROCKIT-Vision-Intelligence",
+    "debajyotidasgupta/eu-halt-demo",
+    "serdartastan/Qwen3-0.6B",
+    "build-small-hackathon/small-hackathon-trainer",
+    "Shinzmann/naija-solar",
+    "Girlz/TokenTrace",
+    "ndrugov/encoder-free-vlm-demo",
+    "sajitkun125/inkference",
+    "sajitkun125/inkference-app",
+    "rahul7star/SDNQ-Playbook",
+    "RavichandranJ/obliteratus",
+    "S-Dreamer/obliteratus",
+    "AlanaSky/asgaard",
+    "marchkamal51/obliteratus",
+    "Mrlongpro/autosubs",
+    "jacob-c/Resume_Screener_and_Skill_Extractor",
+    "AlejandraGG/tecnicas-instruct",
+    "Unknown504/web-ui",
+    "TzurVaich/Final_Assignment_Template",
+    "YSOMAAAD/Storytelling",
+    "KWRegan/LIFgen",
+    "xe1phix/Qwen3-Demo",
+    "KraTUZen/LogicLink-Project-Space",
+    "kingarnica/Qwen3-Demo",
+    "drecokie/dre",
+    "Greff3/ChatVision",
+    "zhaozengxi/Qwen3-Demo",
+    "SpaghettiM/Final_Assignment_Template",
+    "audioer/LLM_demo_docker",
+    "heboya8/Qwen3-Demo",
+    "mahi0412/Smart_phone_finder",
+    "sds-ai/Yee-R1-Demo",
+    "eugenepiggy/Qwen3-Demo",
+    "Yersel/qwen-30B",
+    "zhaozengxi/Qwen3-Demo2",
+    "zhaozengxi/Qwen3-Demo3",
+    "SFM2001/SimpleAES",
+    "itsblxde/nay",
+    "simonnsanita/browseruseapiv2",
+    "Bachstelze/Round-Trip_Translation",
+    "nihar-sarkar/Qwen3-chat",
+    "aephiday/chat-db",
+    "sathishathuggingface/trinethraqwen1.7",
+    "AlbertoPerez0127/Teddy",
+    "Bachstelze/Round-Trip-Qwen3"
+  ],
+  "createdAt": "2025-04-27T03:41:05.000Z",
+  "safetensors": {
+    "parameters": {
+      "BF16": 2031739904
+    },
+    "total": 2031739904
+  },
+  "usedStorage": 4074938246
+}

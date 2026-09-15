@@ -1,0 +1,5 @@
+# Capture environment used Transformers 4.57.6 and NVIDIA PyTorch 25.06
+# (torch 2.8.0a0+5228986c39.nv25.06). Install that GPU image separately.
+transformers==4.57.6
+huggingface_hub==0.36.0
+safetensors==0.6.2

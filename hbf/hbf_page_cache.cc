@@ -1,4 +1,4 @@
-// HBF v0.4: Shared Page Cache Implementation
+// HBF logic-die page cache implementation.
 
 #include "hbf_page_cache.h"
 

@@ -1,0 +1,2 @@
+total_capacity_bytes,per_stack_capacity_bytes,configured_pages,stacks,channels_per_stack,touched_global_pages,trace_requests,ftl_allocations,allocated_metadata_pages,mapping_errors,capacity_error_stacks,run_rc,trace_valid
+549755813888,137438953472,134217728,4,16,5,20,0,0,0,0,0,1

@@ -1,0 +1,29 @@
+{
+  "model": "Qwen/Qwen3-1.7B",
+  "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+  "precision": "bfloat16",
+  "attention": "eager",
+  "batch": 1,
+  "prompt": "Explain in three sentences why larger GPU memory helps large language model inference.",
+  "prompt_tokens": 27,
+  "generated_ids": [
+    43,
+    41776,
+    22670,
+    4938
+  ],
+  "text": "Larger GPU memory",
+  "steps": 4,
+  "native_step_seconds": [
+    79.48521302267909,
+    1.8315091617405415,
+    1498.3064147233963,
+    0.22171417996287346
+  ],
+  "wall_seconds": 1580.2436162009835,
+  "torch": "2.8.0a0+5228986c39.nv25.06",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "peak_gpu_bytes": 3462118400,
+  "capture_step": 2,
+  "probe_layer": -1
+}
