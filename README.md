@@ -88,7 +88,6 @@ Run `make help` to list the main entry points.
 - [Installation and build](artifact/README.md)
 - [Experiments and workloads](experiments/README.md)
 - [Detailed evaluation and Qwen capture/replay](artifact/ARTIFACT_EVALUATION.md)
-- [Validation notes](artifact/VERIFICATION.md)
 
 ## Acknowledgments and license
 
