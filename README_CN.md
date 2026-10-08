@@ -78,7 +78,6 @@ make trace-smoke RUN_TAG=trace-001
 - [安装与构建](artifact/README.md)
 - [实验与负载](experiments/README.md)
 - [详细评测及 Qwen 采集/回放](artifact/ARTIFACT_EVALUATION.md)
-- [验证说明](artifact/VERIFICATION.md)
 
 ## 致谢与许可证
 
