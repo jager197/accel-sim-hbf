@@ -3,7 +3,7 @@
 [English](README.md) | [简体中文](README_CN.md)
 
 HBF-Sim is a configurable GPU–high-bandwidth-flash simulator built on
-Accel-Sim/GPGPU-Sim. It connects GPU execution to NAND page service, making it
+Accel-Sim. It connects GPU execution to NAND page service, making it
 possible to study how memory placement, request coalescing, controller scheduling,
 and flash parallelism affect GPU performance.
 
